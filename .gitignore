@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .build-venv/
 .package-venv/
+.package-*-venv/
 venv/
 models/
 !models/.gitkeep

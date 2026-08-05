@@ -17,6 +17,15 @@
   verification status, cancellation, retry, and offline-ready confirmation.
 - Fix native KDE file and folder pickers in packaged builds by isolating system Qt libraries
   from Swapio's bundled Qt runtime, with a fallback if a native picker crashes.
+- Restore CUDA support in a model-less public RPM profile and report the provider used by
+  loaded model sessions.
+- Keep the CUDA RPM portable and below the release-size target by using system CUDA 12/cuDNN 9
+  libraries rather than copying the build machine's complete toolkit.
+- Open completed output folders through the native file manager with an isolated environment.
+- Keep destination action buttons uniform and readable at the minimum window size.
+- Name outputs as `original_swapped_DDMMYYYY-HHMMSS.ext`, with collision protection.
+- Allow each source portrait to have a remembered character name, producing
+  `CharacterName_swapped_DDMMYYYY-HHMMSS.ext` instead of camera-origin filenames.
 
 ## 0.1.0 — 2026-08-05
 

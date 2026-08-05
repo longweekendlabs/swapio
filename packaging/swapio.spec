@@ -38,6 +38,23 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# The CUDA build must retain ONNX Runtime's CUDA provider, but bundling the
+# machine's entire CUDA/cuDNN installation adds roughly 1.4 GB and is brittle
+# across drivers. These ABI-versioned libraries are normal system prerequisites
+# for the GPU profile; ONNX Runtime falls back to CPU when they are unavailable.
+system_cuda_libraries = {
+    "libcublas.so.12",
+    "libcublasLt.so.12",
+    "libcudart.so.12",
+    "libcudnn.so.9",
+    "libcufft.so.11",
+    "libcurand.so.10",
+    "libnvrtc.so.12",
+}
+a.binaries = [
+    entry for entry in a.binaries if Path(entry[0]).name not in system_cuda_libraries
+]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

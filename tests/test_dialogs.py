@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -80,6 +82,20 @@ class NativeDialogTests(unittest.TestCase):
         paths = app.native_image_files(None, "Choose", "/photos")
 
         self.assertEqual(paths, ["/photos/fallback.jpg"])
+
+    @patch("app.subprocess.Popen")
+    @patch("app.shutil.which")
+    def test_output_folder_uses_system_launcher_environment(self, which, popen):
+        which.side_effect = lambda name: "/usr/bin/kioclient5" if name == "kioclient5" else None
+        with tempfile.TemporaryDirectory() as temp:
+            opened = app.native_open_path(Path(temp))
+
+        self.assertTrue(opened)
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:2], ["/usr/bin/kioclient5", "exec"])
+        self.assertTrue(command[2].startswith("file://"))
+        self.assertIn("env", popen.call_args.kwargs)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
 
 if __name__ == "__main__":

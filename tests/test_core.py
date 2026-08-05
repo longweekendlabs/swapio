@@ -45,10 +45,25 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "photo.jpg"
-            first = core.unique_output_path(root, source)
-            self.assertEqual(first.name, "photo_swapped.jpg")
+            first = core.unique_output_path(root, source, date_tag="05082026-143012")
+            self.assertEqual(first.name, "photo_swapped_05082026-143012.jpg")
             first.touch()
-            self.assertEqual(core.unique_output_path(root, source).name, "photo_swapped_2.jpg")
+            self.assertEqual(
+                core.unique_output_path(root, source, date_tag="05082026-143012").name,
+                "photo_swapped_05082026-143012_2.jpg",
+            )
+
+    def test_character_name_replaces_original_name_and_is_path_safe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = core.unique_output_path(
+                Path(temp),
+                Path("opaque-camera-name.jpg"),
+                suffix=".png",
+                date_tag="05082026-143012",
+                name_prefix="Ada/Lovelace",
+            )
+
+            self.assertEqual(output.name, "Ada_Lovelace_swapped_05082026-143012.png")
 
     def test_swap_largest_face_only(self):
         small = SimpleNamespace(bbox=np.array([0, 0, 10, 10]))

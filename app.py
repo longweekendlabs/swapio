@@ -217,6 +217,34 @@ def native_directory(parent, title: str, start: str) -> str:
     return QFileDialog.getExistingDirectory(parent, title, start)
 
 
+def native_open_path(path: Path) -> bool:
+    """Open a local path with the system desktop outside the bundled Qt runtime."""
+    resolved = path.expanduser().resolve()
+    candidates = (
+        ("kioclient6", ["exec", resolved.as_uri()]),
+        ("kioclient5", ["exec", resolved.as_uri()]),
+        ("xdg-open", [str(resolved)]),
+        ("gio", ["open", str(resolved)]),
+    )
+    for executable, arguments in candidates:
+        command = shutil.which(executable)
+        if not command:
+            continue
+        try:
+            subprocess.Popen(
+                [command, *arguments],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=native_process_environment(),
+                start_new_session=True,
+            )
+            return True
+        except OSError:
+            continue
+    return False
+
+
 def pixmap_from_bgr(image, maximum: int = 900) -> QPixmap:
     height, width = image.shape[:2]
     scale = min(maximum / max(width, height), 1.0)
@@ -411,6 +439,14 @@ class MainWindow(QMainWindow):
         self.source_name.setObjectName("fileName")
         self.source_name.setWordWrap(True)
         source_layout.addWidget(self.source_name)
+        self.character_name = QLineEdit()
+        self.character_name.setPlaceholderText("Character name for output files (optional)")
+        self.character_name.setToolTip(
+            "Example: Fiona → Fiona_swapped_DDMMYYYY-HHMMSS.png"
+        )
+        self.character_name.setMaxLength(80)
+        self.character_name.textChanged.connect(self._on_character_name_changed)
+        source_layout.addWidget(self.character_name)
         source_button = QPushButton("Choose source photo…")
         source_button.clicked.connect(self._choose_source)
         source_layout.addWidget(source_button)
@@ -428,6 +464,7 @@ class MainWindow(QMainWindow):
         self.target_count.setObjectName("fileName")
         destinations_layout.addWidget(self.target_count)
         target_buttons = QHBoxLayout()
+        target_buttons.setSpacing(8)
         add_files = QPushButton("Add photos…")
         add_files.clicked.connect(self._add_files)
         add_folder = QPushButton("Add folder…")
@@ -437,7 +474,8 @@ class MainWindow(QMainWindow):
         clear = QPushButton("Clear")
         clear.clicked.connect(self._clear_targets)
         for button in (add_files, add_folder, remove, clear):
-            target_buttons.addWidget(button)
+            button.setProperty("compact", True)
+            target_buttons.addWidget(button, stretch=1)
         destinations_layout.addLayout(target_buttons)
 
         preview_box = QGroupBox("Preview")
@@ -553,6 +591,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Unreadable image", f"Could not open:\n{path}")
             return
         self.source_path = path
+        source_key = str(path.expanduser().resolve())
+        known_names = self._state.get("source_names", {})
+        self.character_name.setText(known_names.get(source_key, ""))
         self.source_view.set_image(image)
         self.source_name.setText(path.name)
         self.source_name.setToolTip(str(path))
@@ -560,6 +601,19 @@ class MainWindow(QMainWindow):
         self.preview_view.clear_image()
         self.preview_caption.setText("Nothing generated yet")
         self._refresh_controls()
+
+    def _on_character_name_changed(self, name: str) -> None:
+        if not self.source_path:
+            return
+        source_key = str(self.source_path.expanduser().resolve())
+        known_names = dict(self._state.get("source_names", {}))
+        cleaned = name.strip()
+        if cleaned:
+            known_names[source_key] = cleaned
+        else:
+            known_names.pop(source_key, None)
+        self._state["source_names"] = known_names
+        self._save_state()
 
     def _add_files(self):
         paths = native_image_files(
@@ -735,6 +789,7 @@ class MainWindow(QMainWindow):
             all_faces=self._all_faces(),
             quality=self._quality(),
             output_format=self._output_format(),
+            character_name=self.character_name.text().strip(),
         )
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.progress.connect(self._progress)
@@ -787,7 +842,12 @@ class MainWindow(QMainWindow):
 
     def _open_output(self):
         if self.last_output and self.last_output.is_dir():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_output)))
+            if not native_open_path(self.last_output):
+                QMessageBox.warning(
+                    self,
+                    "Open output folder",
+                    f"Could not open the system file manager.\n\nFolder: {self.last_output}",
+                )
 
     def _set_running(self, running: bool):
         self.preview_button.setEnabled(not running)
@@ -904,6 +964,7 @@ class MainWindow(QMainWindow):
             QComboBox::drop-down {{ border:none; width:22px; }}
             QPushButton {{ background:{INPUT}; border:1px solid {BORDER}; border-radius:7px;
                            padding:8px 14px; color:{TEXT}; }}
+            QPushButton[compact="true"] {{ padding-left:7px; padding-right:7px; }}
             QPushButton:hover {{ background:#2e333d; border-color:#465063; }}
             QPushButton:disabled {{ color:#59616c; background:#181b21; border-color:#242a33; }}
             QPushButton#primary {{ background:{ACCENT}; border-color:{ACCENT}; color:{ON_ACCENT};

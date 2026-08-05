@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -86,15 +87,29 @@ def _face_area(face) -> float:
     return max(float(x2 - x1), 0.0) * max(float(y2 - y1), 0.0)
 
 
-def unique_output_path(output_dir: Path, source: Path, suffix: str | None = None) -> Path:
+def unique_output_path(
+    output_dir: Path,
+    source: Path,
+    suffix: str | None = None,
+    date_tag: str | None = None,
+    name_prefix: str | None = None,
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = suffix or (source.suffix.lower() if source.suffix.lower() in IMAGE_EXTS else ".jpg")
     if not suffix.startswith("."):
         suffix = "." + suffix
-    candidate = output_dir / f"{source.stem}_swapped{suffix}"
+    date_tag = date_tag or datetime.now().strftime("%d%m%Y-%H%M%S")
+    requested_stem = (name_prefix or "").strip() or source.stem
+    safe_stem = "".join(
+        "_" if character in "/\\" or not character.isprintable() else character
+        for character in requested_stem
+    ).strip(" .")
+    safe_stem = safe_stem[:80].rstrip(" .") or source.stem
+    output_stem = f"{safe_stem}_swapped_{date_tag}"
+    candidate = output_dir / f"{output_stem}{suffix}"
     number = 2
     while candidate.exists():
-        candidate = output_dir / f"{source.stem}_swapped_{number}{suffix}"
+        candidate = output_dir / f"{output_stem}_{number}{suffix}"
         number += 1
     return candidate
 
@@ -216,9 +231,19 @@ class SwapEngine:
             str(self.models / HYPERSWAP_MODEL), providers=["CPUExecutionProvider"]
         )
 
-        self.provider = "CUDA detection · CPU quality" if want_cuda else "CPU"
-        if want_cuda:
+        analyser_sessions = [
+            getattr(model, "session", None) for model in analyser.models.values()
+        ]
+        accelerated_sessions = analyser_sessions + [getattr(swapper, "session", None)]
+        actual_cuda = any(
+            session is not None and "CUDAExecutionProvider" in session.get_providers()
+            for session in accelerated_sessions
+        )
+        self.provider = "CUDA detection · CPU quality" if actual_cuda else "CPU"
+        if actual_cuda:
             on_log("CUDA accelerates face detection; quality swapping uses the stable CPU path.")
+        elif want_cuda:
+            on_log("CUDA runtime was found but could not start; using CPU safely.")
         on_log(f"Models ready on {self.provider}.")
         self.analyser = analyser
         self.swapper = swapper
@@ -351,6 +376,7 @@ class SwapEngine:
         all_faces: bool = False,
         quality: str = "careful",
         output_format: str = "png",
+        character_name: str = "",
         on_log: LogFn = _noop,
         on_progress: ProgressFn = _noop,
         should_stop: StopFn = lambda: False,
@@ -362,6 +388,7 @@ class SwapEngine:
         errors: list[dict] = []
         outputs: list[str] = []
         total = len(target_paths)
+        batch_date_tag = datetime.now().strftime("%d%m%Y-%H%M%S")
         detail = {"careful": "Careful 512px", "balanced": "Balanced 256px", "fast": "Fast 128px"}.get(
             quality, quality
         )
@@ -380,7 +407,13 @@ class SwapEngine:
                     raise RuntimeError("Unreadable image")
                 result, swapped, detected = self.swap_array(target, source, all_faces, quality)
                 suffix = ".png" if output_format == "png" else ".jpg"
-                output_path = unique_output_path(output_dir, target_path, suffix=suffix)
+                output_path = unique_output_path(
+                    output_dir,
+                    target_path,
+                    suffix=suffix,
+                    date_tag=batch_date_tag,
+                    name_prefix=character_name,
+                )
                 write_image(output_path, result, metadata_source=target_path)
                 outputs.append(str(output_path))
                 completed += 1
