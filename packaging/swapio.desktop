@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Swapio
+Comment=Private offline batch face swapping
+Exec=swapio
+Icon=swapio
+Terminal=false
+Categories=Graphics;Photography;
+StartupWMClass=Swapio

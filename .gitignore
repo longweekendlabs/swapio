@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.build-venv/
+.package-venv/
+venv/
+models/
+!models/.gitkeep
+build/
+dist/
+rpm-build/
+*.rpm
+*.spec
+!packaging/*.spec
+*.log
+.DS_Store
