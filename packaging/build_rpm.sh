@@ -12,14 +12,21 @@ project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_dir"
 
 bundle_models=0
-if [[ "${1:-}" == "--bundle-models" ]]; then
-  bundle_models=1
-elif [[ $# -gt 0 ]]; then
-  echo "Usage: $0 [--bundle-models]" >&2
+reuse_bundle=0
+for argument in "$@"; do
+  case "$argument" in
+    --bundle-models) bundle_models=1 ;;
+    --reuse-bundle) reuse_bundle=1 ;;
+    *) echo "Usage: $0 [--bundle-models] [--reuse-bundle]" >&2; exit 2 ;;
+  esac
+done
+if [[ $bundle_models -eq 1 && $reuse_bundle -eq 1 ]]; then
+  echo "--reuse-bundle cannot be combined with --bundle-models" >&2
   exit 2
 fi
 
 version="$(.venv/bin/python -c 'from version import VERSION; print(VERSION)')"
+release="2"
 architecture="$(uname -m)"
 top="$project_dir/rpm-build"
 stage="$top/stage"
@@ -27,7 +34,9 @@ output_dir="$project_dir/dist"
 
 echo "=== Swapio v${version} — RPM (${architecture}) ==="
 
-if [[ $bundle_models -eq 1 ]]; then
+if [[ $reuse_bundle -eq 1 ]]; then
+  echo "Reusing the existing verified dist/swapio bundle."
+elif [[ $bundle_models -eq 1 ]]; then
   if [[ ! -x .venv/bin/pyinstaller ]]; then
     .venv/bin/pip install pyinstaller
   fi
@@ -60,11 +69,12 @@ chmod 755 "$stage/usr/bin/swapio"
 cat > "$top/SPECS/swapio.spec" <<EOF
 %global __os_install_post %{nil}
 %global debug_package %{nil}
+%global _binary_payload w3.zstdio
 AutoReqProv: no
 
 Name:           swapio
 Version:        ${version}
-Release:        1%{?dist}
+Release:        ${release}%{?dist}
 Summary:        Private offline batch face swapping for still photos
 License:        LicenseRef-Proprietary
 URL:            https://github.com/longweekendlabs/swapio
@@ -102,7 +112,7 @@ suffix=""
 if [[ $bundle_models -eq 1 ]]; then
   suffix="-with-models"
 fi
-final="$output_dir/swapio-${version}-1-${architecture}${suffix}.rpm"
+final="$output_dir/swapio-${version}-${release}-${architecture}${suffix}.rpm"
 cp "$rpm_path" "$final"
 
 echo

@@ -15,6 +15,8 @@
 - Add a hamburger menu with About, GitHub, and Quit actions.
 - Add a first-run model setup dialog with license acknowledgement, live download progress,
   verification status, cancellation, retry, and offline-ready confirmation.
+- Fix native KDE file and folder pickers in packaged builds by isolating system Qt libraries
+  from Swapio's bundled Qt runtime, with a fallback if a native picker crashes.
 
 ## 0.1.0 — 2026-08-05
 

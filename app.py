@@ -61,6 +61,45 @@ IMAGE_FILTER = "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff|Images"
 DIALOG_GEOMETRY = "1000x680"
 
 
+def native_process_environment() -> dict[str, str]:
+    """Return an environment safe for launching system desktop utilities.
+
+    PyInstaller prepends the app bundle to ``LD_LIBRARY_PATH``. That is needed
+    by Swapio itself, but it makes KDE tools load Swapio's private Qt libraries
+    instead of the matching system Qt build.
+    """
+    environment = os.environ.copy()
+    original_library_path = environment.get("LD_LIBRARY_PATH_ORIG")
+    if original_library_path:
+        environment["LD_LIBRARY_PATH"] = original_library_path
+    elif getattr(sys, "frozen", False):
+        environment.pop("LD_LIBRARY_PATH", None)
+
+    if getattr(sys, "frozen", False):
+        for variable in (
+            "QT_PLUGIN_PATH",
+            "QML2_IMPORT_PATH",
+            "QML_IMPORT_PATH",
+            "QT_QPA_PLATFORM_PLUGIN_PATH",
+            "QT_QPA_FONTDIR",
+        ):
+            original = environment.get(f"{variable}_ORIG")
+            if original is not None:
+                environment[variable] = original
+            else:
+                environment.pop(variable, None)
+    return environment
+
+
+def _native_result_paths(result: subprocess.CompletedProcess[str]) -> list[str] | None:
+    """Return selections, an empty cancellation, or None for a crashed picker."""
+    if result.returncode == 0:
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not result.stderr.strip():
+        return []
+    return None
+
+
 def state_path() -> Path:
     config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return config / "swapio" / "state.json"
@@ -91,8 +130,16 @@ def native_image_files(parent, title: str, start: str, multiple: bool = False) -
         if multiple:
             command += ["--multiple", "--separate-output"]
         command += ["--getopenfilename", start, IMAGE_FILTER]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()] if result.returncode == 0 else []
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=native_process_environment(),
+        )
+        paths = _native_result_paths(result)
+        if paths is not None:
+            return paths
     if shutil.which("zenity"):
         command = [
             "zenity",
@@ -106,8 +153,16 @@ def native_image_files(parent, title: str, start: str, multiple: bool = False) -
         ]
         if multiple:
             command += ["--multiple", "--separator", "\n"]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()] if result.returncode == 0 else []
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=native_process_environment(),
+        )
+        paths = _native_result_paths(result)
+        if paths is not None:
+            return paths
     if multiple:
         paths, _ = QFileDialog.getOpenFileNames(
             parent, title, start, "Images (*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff)"
@@ -135,8 +190,11 @@ def native_directory(parent, title: str, start: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            env=native_process_environment(),
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        paths = _native_result_paths(result)
+        if paths is not None:
+            return paths[0] if paths else ""
     if shutil.which("zenity"):
         result = subprocess.run(
             [
@@ -151,8 +209,11 @@ def native_directory(parent, title: str, start: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            env=native_process_environment(),
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        paths = _native_result_paths(result)
+        if paths is not None:
+            return paths[0] if paths else ""
     return QFileDialog.getExistingDirectory(parent, title, start)
 
 
