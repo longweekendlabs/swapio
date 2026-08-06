@@ -3,7 +3,10 @@ import os
 from pathlib import Path
 
 project_root = Path(SPECPATH).parent
-datas = [(str(project_root / "assets"), "assets")]
+datas = [
+    (str(project_root / "assets"), "assets"),
+    (str(project_root / "THIRD_PARTY_NOTICES.md"), "."),
+]
 if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
     required = [
         project_root / "models/buffalo_l/2d106det.onnx",
@@ -11,6 +14,7 @@ if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
         project_root / "models/buffalo_l/w600k_r50.onnx",
         project_root / "models/inswapper_128.onnx",
         project_root / "models/hyperswap_1a_256.onnx",
+        project_root / "models/bisenet_resnet_18.onnx",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:

@@ -18,14 +18,17 @@ to the cloud. Swapio is a focused Linux desktop app from Long Weekend Labs.
 - Failed photos are skipped and reported instead of aborting the batch
 - Repeat batches process only new or changed photos by default
 - Optional inner-mouth and teeth preservation for cleaner open-mouth smiles
+- Offline hair recoloring with natural presets, custom colors, source matching, and strength control
+- Conservative source skin-tone matching for the selected face, ears, and neck
 - Oriented pixels and safe EXIF/ICC metadata are retained where possible
 
 Named outputs use `CharacterName_swapped_DDMMYYYY-HHMMSS.ext`. Without a
 character name, Swapio uses the destination filename before the swap/date tags.
 
 Swapio changes the facial identity while retaining the destination pose,
-expression, hair, lighting, body, and image dimensions. Lossless PNG keeps every
-pixel outside the composited face exactly as decoded from the destination.
+expression, body, and image dimensions. Hair and skin appearance remain unchanged
+unless their optional controls are enabled. Lossless PNG keeps pixels outside the
+face and enabled appearance masks exactly as decoded from the destination.
 
 ## Run from source
 
@@ -73,15 +76,17 @@ states that its downloaded pretrained models are for non-commercial research
 use, while HyperSwap is published under ResearchRAIL. Review the model terms
 before use; commercial use may require separate permission. The setup script
 keeps models out of Git and requires an explicit acknowledgement before
-installation.
+installation. The BiSeNet ResNet-18 appearance parser comes from
+[yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) under the MIT License.
 
 Only alter photos you own or have permission to modify.
 
 ## Current scope
 
-Version 0.3.1 processes still images (`jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`,
-and `tiff`). Video, character libraries, and face enhancement are intentionally
-outside the first focused release.
+Version 0.4.0 processes still images (`jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`,
+and `tiff`) with optional hair and conservative face/neck skin appearance tools.
+Video, body reshaping, character libraries, and face enhancement remain outside
+this focused release.
 
 Made with ♥ by **[Long Weekend Labs](https://github.com/longweekendlabs)**.
 

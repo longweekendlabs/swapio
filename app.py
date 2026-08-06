@@ -11,10 +11,11 @@ from pathlib import Path
 
 import cv2
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QImage, QPixmap
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSlider,
     QSplitter,
     QToolButton,
     QVBoxLayout,
@@ -270,7 +272,7 @@ class ImageView(QLabel):
         # minimum made both image canvases paint underneath those controls when
         # the options section grew. Keep the canvases flexible so every card
         # remains inside the shared workflow row.
-        self.setMinimumSize(180, 120)
+        self.setMinimumSize(180, 100)
         self.setObjectName("imageView")
 
     def set_image(self, image) -> None:
@@ -347,6 +349,10 @@ class MainWindow(QMainWindow):
         self.engine = core.SwapEngine(use_gpu=True)
         self.last_output: Path | None = None
         self._state = read_state()
+        self._restoring_state = True
+        self.custom_hair_color = str(
+            self._state.get("custom_hair_color", "#b85c32")
+        )
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -363,6 +369,7 @@ class MainWindow(QMainWindow):
 
         self._apply_style()
         self._restore_state()
+        self._restoring_state = False
         self._refresh_model_status()
         self._refresh_controls()
 
@@ -437,12 +444,19 @@ class MainWindow(QMainWindow):
 
         source_box = QGroupBox("1 — Source face")
         source_layout = QVBoxLayout(source_box)
+        source_layout.setSpacing(8)
         self.source_view = ImageView("Choose one clear source portrait")
         source_layout.addWidget(self.source_view, stretch=1)
+        source_footer = QWidget()
+        source_footer.setObjectName("cardFooter")
+        source_footer.setFixedHeight(96)
+        source_footer_layout = QVBoxLayout(source_footer)
+        source_footer_layout.setContentsMargins(0, 0, 0, 0)
+        source_footer_layout.setSpacing(6)
         self.source_name = QLabel("No source selected")
         self.source_name.setObjectName("fileName")
         self.source_name.setWordWrap(True)
-        source_layout.addWidget(self.source_name)
+        source_footer_layout.addWidget(self.source_name)
         self.character_name = QLineEdit()
         self.character_name.setPlaceholderText("Character name for output files (optional)")
         self.character_name.setToolTip(
@@ -450,10 +464,11 @@ class MainWindow(QMainWindow):
         )
         self.character_name.setMaxLength(80)
         self.character_name.textChanged.connect(self._on_character_name_changed)
-        source_layout.addWidget(self.character_name)
+        source_footer_layout.addWidget(self.character_name)
         source_button = QPushButton("Choose source photo…")
         source_button.clicked.connect(self._choose_source)
-        source_layout.addWidget(source_button)
+        source_footer_layout.addWidget(source_button)
+        source_layout.addWidget(source_footer)
 
         destinations_box = QGroupBox("2 — Destination photos")
         destinations_layout = QVBoxLayout(destinations_box)
@@ -464,9 +479,16 @@ class MainWindow(QMainWindow):
         self.target_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.target_list.currentRowChanged.connect(self._show_selected_target)
         destinations_layout.addWidget(self.target_list, stretch=1)
+        destinations_footer = QWidget()
+        destinations_footer.setObjectName("cardFooter")
+        destinations_footer.setFixedHeight(96)
+        destinations_footer_layout = QVBoxLayout(destinations_footer)
+        destinations_footer_layout.setContentsMargins(0, 0, 0, 0)
+        destinations_footer_layout.setSpacing(6)
         self.target_count = QLabel("No destination photos")
         self.target_count.setObjectName("fileName")
-        destinations_layout.addWidget(self.target_count)
+        destinations_footer_layout.addWidget(self.target_count)
+        destinations_footer_layout.addStretch(1)
         target_buttons = QHBoxLayout()
         target_buttons.setSpacing(8)
         add_files = QPushButton("Add photos…")
@@ -480,16 +502,26 @@ class MainWindow(QMainWindow):
         for button in (add_files, add_folder, remove, clear):
             button.setProperty("compact", True)
             target_buttons.addWidget(button, stretch=1)
-        destinations_layout.addLayout(target_buttons)
+        destinations_footer_layout.addLayout(target_buttons)
+        destinations_layout.addWidget(destinations_footer)
 
         preview_box = QGroupBox("Preview")
         preview_layout = QVBoxLayout(preview_box)
+        preview_layout.setSpacing(8)
         self.preview_view = ImageView("Select a destination, then click Preview")
         preview_layout.addWidget(self.preview_view, stretch=1)
+        preview_footer = QWidget()
+        preview_footer.setObjectName("cardFooter")
+        preview_footer.setFixedHeight(96)
+        preview_footer_layout = QVBoxLayout(preview_footer)
+        preview_footer_layout.setContentsMargins(0, 0, 0, 0)
+        preview_footer_layout.setSpacing(6)
         self.preview_caption = QLabel("Nothing generated yet")
         self.preview_caption.setObjectName("fileName")
         self.preview_caption.setWordWrap(True)
-        preview_layout.addWidget(self.preview_caption)
+        preview_footer_layout.addWidget(self.preview_caption)
+        preview_footer_layout.addStretch(1)
+        preview_layout.addWidget(preview_footer)
 
         splitter.addWidget(source_box)
         splitter.addWidget(destinations_box)
@@ -498,7 +530,7 @@ class MainWindow(QMainWindow):
         return splitter
 
     def _build_options(self):
-        box = QGroupBox("3 — Output and options")
+        box = QGroupBox("3 — Output, quality and appearance")
         grid = QGridLayout(box)
         grid.setColumnStretch(1, 1)
         output_label = QLabel("Output folder")
@@ -540,23 +572,67 @@ class MainWindow(QMainWindow):
         mouth_label = QLabel("Open-mouth smiles")
         mouth_label.setObjectName("fieldLabel")
         self.preserve_mouth = QCheckBox("Preserve target inner mouth and teeth")
-        self.preserve_mouth.setChecked(True)
+        self.preserve_mouth.setChecked(False)
         self.preserve_mouth.setToolTip(
             "Keeps only teeth, tongue, and the inside of an open mouth; lips and the surrounding face remain swapped."
         )
         self.preserve_mouth.stateChanged.connect(self._save_state)
         grid.addWidget(mouth_label, 3, 0)
-        grid.addWidget(self.preserve_mouth, 3, 1, 1, 2)
-        history_label = QLabel("Repeat batches")
-        history_label.setObjectName("fieldLabel")
+        grid.addWidget(self.preserve_mouth, 3, 1)
         self.skip_completed = QCheckBox("Skip unchanged photos already completed")
         self.skip_completed.setChecked(True)
         self.skip_completed.setToolTip(
             "Swapio records successful outputs in the output folder and only processes new or changed photos."
         )
         self.skip_completed.stateChanged.connect(self._save_state)
-        grid.addWidget(history_label, 4, 0)
-        grid.addWidget(self.skip_completed, 4, 1, 1, 2)
+        grid.addWidget(self.skip_completed, 3, 2)
+
+        hair_label = QLabel("Photo appearance")
+        hair_label.setObjectName("fieldLabel")
+        self.hair_mode = QComboBox()
+        self.hair_mode.addItem("No hair-color change", "off")
+        self.hair_mode.addItem("Match source hair", "source")
+        self.hair_mode.addItem("Natural black", "natural_black")
+        self.hair_mode.addItem("Dark brown", "dark_brown")
+        self.hair_mode.addItem("Chestnut", "chestnut")
+        self.hair_mode.addItem("Auburn", "auburn")
+        self.hair_mode.addItem("Copper", "copper")
+        self.hair_mode.addItem("Golden blonde", "golden_blonde")
+        self.hair_mode.addItem("Platinum", "platinum")
+        self.hair_mode.addItem("Burgundy", "burgundy")
+        self.hair_mode.addItem("Custom color", "custom")
+        self.hair_mode.currentIndexChanged.connect(self._on_hair_mode_changed)
+        hair_controls = QHBoxLayout()
+        hair_controls.setContentsMargins(0, 0, 0, 0)
+        hair_controls.setSpacing(8)
+        hair_controls.addWidget(self.hair_mode, stretch=2)
+        self.custom_hair_button = QPushButton()
+        self.custom_hair_button.setProperty("compact", True)
+        self.custom_hair_button.clicked.connect(self._choose_hair_color)
+        hair_controls.addWidget(self.custom_hair_button)
+        strength_label = QLabel("Strength")
+        strength_label.setObjectName("fieldLabel")
+        hair_controls.addWidget(strength_label)
+        self.hair_strength = QSlider(Qt.Horizontal)
+        self.hair_strength.setRange(10, 100)
+        self.hair_strength.setValue(65)
+        self.hair_strength.setToolTip("How strongly the selected hair color is applied")
+        self.hair_strength.valueChanged.connect(self._on_hair_strength_changed)
+        hair_controls.addWidget(self.hair_strength, stretch=1)
+        self.hair_strength_value = QLabel("65%")
+        self.hair_strength_value.setObjectName("fileName")
+        self.hair_strength_value.setMinimumWidth(34)
+        hair_controls.addWidget(self.hair_strength_value)
+        self.skin_match = QCheckBox("Match source skin tone")
+        self.skin_match.setToolTip(
+            "Conservatively matches face, ears, and neck while preserving target lighting and texture."
+        )
+        self.skin_match.stateChanged.connect(self._save_state)
+        hair_controls.addWidget(self.skin_match)
+        grid.addWidget(hair_label, 4, 0)
+        grid.addLayout(hair_controls, 4, 1, 1, 2)
+        self._refresh_custom_hair_button()
+        self._on_hair_mode_changed()
         return box
 
     def _build_actions(self):
@@ -740,6 +816,46 @@ class MainWindow(QMainWindow):
     def _output_format(self) -> str:
         return self.output_format.currentData()
 
+    def _hair_mode(self) -> str:
+        return str(self.hair_mode.currentData() or "off")
+
+    def _appearance_kwargs(self) -> dict:
+        return {
+            "hair_mode": self._hair_mode(),
+            "custom_hair_color": self.custom_hair_color,
+            "hair_strength": self.hair_strength.value(),
+            "skin_match": self.skin_match.isChecked(),
+        }
+
+    def _refresh_custom_hair_button(self) -> None:
+        self.custom_hair_button.setText(
+            f"Custom {self.custom_hair_color.upper()}"
+        )
+
+    def _on_hair_mode_changed(self, _index: int = -1) -> None:
+        enabled = self._hair_mode() != "off"
+        custom = self._hair_mode() == "custom"
+        self.custom_hair_button.setVisible(custom)
+        self.hair_strength.setEnabled(enabled)
+        self.hair_strength_value.setEnabled(enabled)
+        self._save_state()
+
+    def _on_hair_strength_changed(self, value: int) -> None:
+        self.hair_strength_value.setText(f"{value}%")
+        self._save_state()
+
+    def _choose_hair_color(self) -> None:
+        selected = QColorDialog.getColor(
+            QColor(self.custom_hair_color),
+            self,
+            "Choose a custom hair color",
+        )
+        if not selected.isValid():
+            return
+        self.custom_hair_color = selected.name(QColor.HexRgb)
+        self._refresh_custom_hair_button()
+        self._save_state()
+
     def _selected_target(self) -> Path | None:
         row = self.target_list.currentRow()
         return self.targets[row] if 0 <= row < len(self.targets) else None
@@ -760,6 +876,7 @@ class MainWindow(QMainWindow):
             all_faces=self._all_faces(),
             quality=self._quality(),
             preserve_mouth=self.preserve_mouth.isChecked(),
+            **self._appearance_kwargs(),
         )
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.preview_ready.connect(self._preview_ready)
@@ -772,9 +889,15 @@ class MainWindow(QMainWindow):
         self._set_running(False)
         self.preview_view.set_image(result["image"])
         target = Path(result["target"]).name
+        appearance = []
+        if result.get("hair_mode") != "off":
+            appearance.append("hair adjusted")
+        if result.get("skin_match"):
+            appearance.append("skin matched")
+        appearance_text = f" · {', '.join(appearance)}" if appearance else ""
         self.preview_caption.setText(
             f"{target} — swapped {result['swapped']} face(s) · "
-            f"{result['quality'].title()} · {result['provider']}"
+            f"{result['quality'].title()} · {result['provider']}{appearance_text}"
         )
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
@@ -815,6 +938,7 @@ class MainWindow(QMainWindow):
             character_name=self.character_name.text().strip(),
             preserve_mouth=self.preserve_mouth.isChecked(),
             skip_completed=self.skip_completed.isChecked(),
+            **self._appearance_kwargs(),
         )
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.progress.connect(self._progress)
@@ -902,7 +1026,7 @@ class MainWindow(QMainWindow):
     def _refresh_model_status(self):
         missing = core.missing_models()
         if missing:
-            self.model_status.setText("↓ Download models · ~1.1 GB")
+            self.model_status.setText("↓ Download models · ~1.2 GB")
             self.model_status.setProperty("state", "warning")
             self.model_status.setToolTip("Missing: " + ", ".join(missing) + "\nClick to set up.")
         elif self.engine.provider != "Not loaded":
@@ -928,16 +1052,34 @@ class MainWindow(QMainWindow):
         output_format = self._state.get("output_format", "png")
         format_index = self.output_format.findData(output_format)
         self.output_format.setCurrentIndex(max(format_index, 0))
-        self.preserve_mouth.setChecked(bool(self._state.get("preserve_mouth", True)))
+        self.preserve_mouth.setChecked(bool(self._state.get("preserve_mouth", False)))
         self.skip_completed.setChecked(bool(self._state.get("skip_completed", True)))
+        hair_mode = str(self._state.get("hair_mode", "off"))
+        hair_index = self.hair_mode.findData(hair_mode)
+        self.hair_mode.setCurrentIndex(max(hair_index, 0))
+        self.custom_hair_color = str(
+            self._state.get("custom_hair_color", "#b85c32")
+        )
+        self.hair_strength.setValue(
+            max(10, min(100, int(self._state.get("hair_strength", 65))))
+        )
+        self.skin_match.setChecked(bool(self._state.get("skin_match", False)))
+        self._refresh_custom_hair_button()
+        self._on_hair_mode_changed()
 
     def _save_state(self):
+        if self._restoring_state:
+            return
         self._state["output_dir"] = self.output_edit.text().strip()
         self._state["face_mode"] = self.face_mode.currentIndex()
         self._state["quality"] = self._quality()
         self._state["output_format"] = self._output_format()
         self._state["preserve_mouth"] = self.preserve_mouth.isChecked()
         self._state["skip_completed"] = self.skip_completed.isChecked()
+        self._state["hair_mode"] = self._hair_mode()
+        self._state["custom_hair_color"] = self.custom_hair_color
+        self._state["hair_strength"] = self.hair_strength.value()
+        self._state["skin_match"] = self.skin_match.isChecked()
         write_state(self._state)
 
     def closeEvent(self, event):
@@ -963,6 +1105,7 @@ class MainWindow(QMainWindow):
             QWidget {{ background:{BG}; color:{TEXT}; font-size:13px;
                        font-family:'Inter','Segoe UI',system-ui,sans-serif; }}
             QLabel, QCheckBox, QSplitter {{ background:transparent; }}
+            QWidget#cardFooter {{ background:transparent; }}
             #brand {{ color:{ACCENT}; font-size:26px; font-weight:800; letter-spacing:0.5px; }}
             #pageSub {{ color:{MUTED}; font-size:12px; }}
             #versionBadge {{ color:{ACCENT}; border:1px solid #694435; border-radius:9px;
@@ -1019,6 +1162,14 @@ class MainWindow(QMainWindow):
             QProgressBar {{ background:{INPUT}; border:1px solid {BORDER}; border-radius:7px;
                             text-align:center; height:20px; color:{TEXT}; }}
             QProgressBar::chunk {{ background:{ACCENT}; border-radius:6px; }}
+            QSlider::groove:horizontal {{ background:{BG}; border:1px solid {BORDER};
+                                          height:6px; border-radius:3px; }}
+            QSlider::sub-page:horizontal {{ background:{ACCENT}; border-radius:3px; }}
+            QSlider::handle:horizontal {{ background:{TEXT}; border:1px solid {BORDER};
+                                          width:14px; margin:-5px 0; border-radius:7px; }}
+            QSlider::groove:horizontal:disabled,
+            QSlider::sub-page:horizontal:disabled {{ background:#20242b; }}
+            QSlider::handle:horizontal:disabled {{ background:#3a404a; }}
             QCheckBox {{ spacing:8px; color:{LABEL}; }}
             QCheckBox::indicator {{ width:17px; height:17px; border:1px solid {BORDER};
                                     border-radius:4px; background:{INPUT}; }}

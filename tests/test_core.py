@@ -117,6 +117,31 @@ class CoreTests(unittest.TestCase):
             self.assertEqual((fully_swapped["completed"], fully_swapped["skipped"]), (1, 0))
             self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 2)
 
+    def test_changing_appearance_settings_reruns_completed_photo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.png"
+            target = root / "target.png"
+            output = root / "output"
+            Image.new("RGB", (16, 16), "white").save(source)
+            Image.new("RGB", (16, 16), "navy").save(target)
+            engine = core.SwapEngine()
+            engine.source_face = lambda *_args, **_kwargs: object()
+            engine.swap_array = lambda image, *_args, **_kwargs: (image, 1, 1)
+
+            unchanged = engine.batch(source, [target], output, hair_mode="off")
+            copper = engine.batch(
+                source,
+                [target],
+                output,
+                hair_mode="copper",
+                hair_strength=70,
+            )
+
+            self.assertEqual((unchanged["completed"], unchanged["skipped"]), (1, 0))
+            self.assertEqual((copper["completed"], copper["skipped"]), (1, 0))
+            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 2)
+
     def test_swap_largest_face_only(self):
         small = SimpleNamespace(bbox=np.array([0, 0, 10, 10]))
         large = SimpleNamespace(bbox=np.array([0, 0, 20, 20]))

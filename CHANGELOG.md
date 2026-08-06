@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 — 2026-08-06
+
+- Add offline photo appearance controls to preview and batch processing.
+- Add natural hair-color presets, a native custom color picker, and source-hair matching.
+- Add a hair-color strength control that retains local texture, highlights, and shadows.
+- Add conservative source skin-tone matching for the selected face, ears, and neck.
+- Use a verified MIT-licensed BiSeNet ONNX parser to isolate appearance regions.
+- Reject disconnected hair belonging to a nearby person instead of recoloring it.
+- Include every appearance setting in repeat-batch history so changed settings rerun.
+- Keep the source, destination, and preview canvases aligned above equal-height footers.
+- Make inner-mouth preservation opt-in by default after real-photo quality evaluation.
+
 ## 0.3.1 — 2026-08-06
 
 - Add an enabled-by-default option to preserve the target's inner mouth and teeth.

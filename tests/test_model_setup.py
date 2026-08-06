@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from model_setup_dialog import ModelSetupDialog
+import setup_models
 from version import VERSION
 
 
@@ -18,7 +20,23 @@ QT_APP = QApplication.instance() or QApplication([])
 
 class ModelSetupTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(VERSION, "0.3.1")
+        self.assertEqual(VERSION, "0.4.0")
+
+    def test_verified_appearance_parser_is_not_downloaded_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / setup_models.FACE_PARSER_FILENAME
+            destination.touch()
+            progress = []
+            with patch(
+                "setup_models.sha256", return_value=setup_models.FACE_PARSER_SHA256
+            ), patch("setup_models.download") as download:
+                setup_models.install_face_parser(
+                    Path(temp),
+                    on_progress=lambda *values: progress.append(values),
+                )
+
+            download.assert_not_called()
+            self.assertEqual(progress[-1][1], "Installed and verified")
 
     def test_download_requires_license_acknowledgement(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(

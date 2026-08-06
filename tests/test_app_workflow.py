@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QApplication
 
 import app
@@ -17,6 +18,30 @@ QT_APP = QApplication.instance() or QApplication([])
 
 
 class AppWorkflowTests(unittest.TestCase):
+    @patch(
+        "app.read_state",
+        return_value={
+            "hair_mode": "copper",
+            "hair_strength": 72,
+            "custom_hair_color": "#123456",
+            "skin_match": True,
+        },
+    )
+    @patch("app.core.missing_models", return_value=[])
+    def test_appearance_settings_restore_into_processing_kwargs(self, _missing, _state):
+        window = app.MainWindow()
+
+        self.assertEqual(
+            window._appearance_kwargs(),
+            {
+                "hair_mode": "copper",
+                "custom_hair_color": "#123456",
+                "hair_strength": 72,
+                "skin_match": True,
+            },
+        )
+        window.close()
+
     @patch("app.read_state", return_value={})
     @patch("app.core.missing_models", return_value=[])
     def test_workflow_canvases_do_not_overlap_card_controls(self, _missing, _state):
@@ -25,14 +50,40 @@ class AppWorkflowTests(unittest.TestCase):
         window.show()
         QT_APP.processEvents()
 
-        self.assertLess(window.source_view.geometry().bottom(), window.source_name.geometry().top())
+        source_bottom = window.source_view.mapTo(
+            window, QPoint(0, window.source_view.height() - 1)
+        ).y()
+        source_name_top = window.source_name.mapTo(window, QPoint(0, 0)).y()
+        preview_bottom = window.preview_view.mapTo(
+            window, QPoint(0, window.preview_view.height() - 1)
+        ).y()
+        preview_caption_top = window.preview_caption.mapTo(window, QPoint(0, 0)).y()
+        source_name_bottom = window.source_name.mapTo(
+            window, QPoint(0, window.source_name.height() - 1)
+        ).y()
+        character_top = window.character_name.mapTo(window, QPoint(0, 0)).y()
+
+        self.assertLess(source_bottom, source_name_top)
         self.assertLess(
-            window.preview_view.geometry().bottom(),
-            window.preview_caption.geometry().top(),
+            preview_bottom,
+            preview_caption_top,
         )
         self.assertLess(
-            window.source_name.geometry().bottom(),
-            window.character_name.geometry().top(),
+            source_name_bottom,
+            character_top,
+        )
+        self.assertLessEqual(
+            max(
+                window.source_view.height(),
+                window.target_list.height(),
+                window.preview_view.height(),
+            )
+            - min(
+                window.source_view.height(),
+                window.target_list.height(),
+                window.preview_view.height(),
+            ),
+            1,
         )
         window.close()
 
