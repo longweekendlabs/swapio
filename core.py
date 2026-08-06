@@ -16,11 +16,12 @@ import numpy as np
 from PIL import Image, ImageOps
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-REQUIRED_BUFFALO_MODELS = {"det_10g.onnx", "w600k_r50.onnx"}
+REQUIRED_BUFFALO_MODELS = {"2d106det.onnx", "det_10g.onnx", "w600k_r50.onnx"}
 SWAPPER_MODEL = "inswapper_128.onnx"
 HYPERSWAP_MODEL = "hyperswap_1a_256.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 1
+PROCESSING_REVISION = 2
+INNER_MOUTH_106_INDICES = np.array([65, 66, 62, 70, 69, 57, 60, 54])
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[int, int, dict], None]
@@ -188,6 +189,7 @@ def processing_key(
     quality: str,
     output_format: str,
     character_name: str,
+    preserve_mouth: bool,
 ) -> str:
     """Identify an unchanged input and the settings that produced its output."""
     payload = {
@@ -198,6 +200,7 @@ def processing_key(
         "quality": quality,
         "output_format": output_format,
         "character_name": character_name.strip(),
+        "preserve_mouth": preserve_mouth,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -311,7 +314,7 @@ class SwapEngine:
         analyser = FaceAnalysis(
             name="buffalo_l",
             root=str(self.models.parent),
-            allowed_modules=["detection", "recognition"],
+            allowed_modules=["detection", "landmark_2d_106", "recognition"],
             providers=providers,
         )
         analyser.prepare(ctx_id=0 if want_cuda else -1, det_size=(self.det_size, self.det_size))
@@ -418,12 +421,45 @@ class SwapEngine:
         crop = self._explode_pixels(swapped_tiles, model_size, boost_size)
         return self._paste_crop(target, crop, matrix)
 
+    @staticmethod
+    def _preserve_inner_mouth(
+        swapped: np.ndarray,
+        original: np.ndarray,
+        target_face,
+    ) -> np.ndarray:
+        """Restore only the target pixels inside an open inner-lip contour."""
+        landmarks = getattr(target_face, "landmark_2d_106", None)
+        if landmarks is None or len(landmarks) < 106:
+            return swapped
+        points = np.asarray(landmarks, dtype=np.float32)[INNER_MOUTH_106_INDICES]
+        left, right = points[0], points[4]
+        top, bottom = points[2], points[6]
+        mouth_width = float(np.linalg.norm(right - left))
+        mouth_opening = float(np.linalg.norm(bottom - top))
+        if mouth_width < 4 or mouth_opening / mouth_width < 0.045:
+            return swapped
+
+        mask = np.zeros(original.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(mask, [np.rint(points).astype(np.int32)], 255)
+        inset = max(1, round(mouth_width * 0.018))
+        kernel_size = inset * 2 + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        mask = cv2.erode(mask, kernel, iterations=1)
+        feather = max(mouth_width * 0.018, 0.8)
+        mask = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), feather) / 255.0
+        mask = mask[:, :, None]
+        return (
+            mask * original.astype(np.float32)
+            + (1.0 - mask) * swapped.astype(np.float32)
+        ).clip(0, 255).astype(np.uint8)
+
     def swap_array(
         self,
         target: np.ndarray,
         source_face,
         all_faces: bool = False,
         quality: str = "careful",
+        preserve_mouth: bool = True,
     ):
         faces = sorted(self.analyser.get(target), key=_face_area, reverse=True)
         if not faces:
@@ -436,6 +472,8 @@ class SwapEngine:
             else:
                 boost_size = 512 if quality == "careful" else 256
                 result = self._hyperswap_face(result, face, source_face, boost_size)
+            if preserve_mouth:
+                result = self._preserve_inner_mouth(result, target, face)
         return result, len(selected), len(faces)
 
     def preview(
@@ -444,13 +482,16 @@ class SwapEngine:
         target_path: Path | str,
         all_faces: bool = False,
         quality: str = "careful",
+        preserve_mouth: bool = True,
         on_log: LogFn = _noop,
     ) -> dict:
         source = self.source_face(source_path, on_log)
         target = load_image(target_path)
         if target is None:
             raise RuntimeError(f"Could not read destination image: {target_path}")
-        result, swapped, detected = self.swap_array(target, source, all_faces, quality)
+        result, swapped, detected = self.swap_array(
+            target, source, all_faces, quality, preserve_mouth
+        )
         return {
             "image": result,
             "target": str(target_path),
@@ -469,6 +510,7 @@ class SwapEngine:
         quality: str = "careful",
         output_format: str = "png",
         character_name: str = "",
+        preserve_mouth: bool = True,
         skip_completed: bool = True,
         on_log: LogFn = _noop,
         on_progress: ProgressFn = _noop,
@@ -486,6 +528,7 @@ class SwapEngine:
                 quality=quality,
                 output_format=output_format,
                 character_name=character_name,
+                preserve_mouth=preserve_mouth,
             )
             keyed_targets.append((target_path, key))
         pending = [
@@ -526,7 +569,9 @@ class SwapEngine:
                 target = load_image(target_path)
                 if target is None:
                     raise RuntimeError("Unreadable image")
-                result, swapped, detected = self.swap_array(target, source, all_faces, quality)
+                result, swapped, detected = self.swap_array(
+                    target, source, all_faces, quality, preserve_mouth
+                )
                 suffix = ".png" if output_format == "png" else ".jpg"
                 output_path = unique_output_path(
                     output_dir,

@@ -266,7 +266,11 @@ class ImageView(QLabel):
         self._pixmap = None
         self._empty_text = empty_text
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(240, 250)
+        # The source card has more controls than the preview card. A tall fixed
+        # minimum made both image canvases paint underneath those controls when
+        # the options section grew. Keep the canvases flexible so every card
+        # remains inside the shared workflow row.
+        self.setMinimumSize(180, 120)
         self.setObjectName("imageView")
 
     def set_image(self, image) -> None:
@@ -533,6 +537,16 @@ class MainWindow(QMainWindow):
         grid.addWidget(quality_label, 2, 0)
         grid.addWidget(self.quality_mode, 2, 1)
         grid.addWidget(self.output_format, 2, 2)
+        mouth_label = QLabel("Open-mouth smiles")
+        mouth_label.setObjectName("fieldLabel")
+        self.preserve_mouth = QCheckBox("Preserve target inner mouth and teeth")
+        self.preserve_mouth.setChecked(True)
+        self.preserve_mouth.setToolTip(
+            "Keeps only teeth, tongue, and the inside of an open mouth; lips and the surrounding face remain swapped."
+        )
+        self.preserve_mouth.stateChanged.connect(self._save_state)
+        grid.addWidget(mouth_label, 3, 0)
+        grid.addWidget(self.preserve_mouth, 3, 1, 1, 2)
         history_label = QLabel("Repeat batches")
         history_label.setObjectName("fieldLabel")
         self.skip_completed = QCheckBox("Skip unchanged photos already completed")
@@ -541,8 +555,8 @@ class MainWindow(QMainWindow):
             "Swapio records successful outputs in the output folder and only processes new or changed photos."
         )
         self.skip_completed.stateChanged.connect(self._save_state)
-        grid.addWidget(history_label, 3, 0)
-        grid.addWidget(self.skip_completed, 3, 1, 1, 2)
+        grid.addWidget(history_label, 4, 0)
+        grid.addWidget(self.skip_completed, 4, 1, 1, 2)
         return box
 
     def _build_actions(self):
@@ -745,6 +759,7 @@ class MainWindow(QMainWindow):
             target_path=target,
             all_faces=self._all_faces(),
             quality=self._quality(),
+            preserve_mouth=self.preserve_mouth.isChecked(),
         )
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.preview_ready.connect(self._preview_ready)
@@ -798,6 +813,7 @@ class MainWindow(QMainWindow):
             quality=self._quality(),
             output_format=self._output_format(),
             character_name=self.character_name.text().strip(),
+            preserve_mouth=self.preserve_mouth.isChecked(),
             skip_completed=self.skip_completed.isChecked(),
         )
         self.worker.log.connect(self.log.appendPlainText)
@@ -912,6 +928,7 @@ class MainWindow(QMainWindow):
         output_format = self._state.get("output_format", "png")
         format_index = self.output_format.findData(output_format)
         self.output_format.setCurrentIndex(max(format_index, 0))
+        self.preserve_mouth.setChecked(bool(self._state.get("preserve_mouth", True)))
         self.skip_completed.setChecked(bool(self._state.get("skip_completed", True)))
 
     def _save_state(self):
@@ -919,6 +936,7 @@ class MainWindow(QMainWindow):
         self._state["face_mode"] = self.face_mode.currentIndex()
         self._state["quality"] = self._quality()
         self._state["output_format"] = self._output_format()
+        self._state["preserve_mouth"] = self.preserve_mouth.isChecked()
         self._state["skip_completed"] = self.skip_completed.isChecked()
         write_state(self._state)
 

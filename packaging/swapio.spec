@@ -6,6 +6,7 @@ project_root = Path(SPECPATH).parent
 datas = [(str(project_root / "assets"), "assets")]
 if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
     required = [
+        project_root / "models/buffalo_l/2d106det.onnx",
         project_root / "models/buffalo_l/det_10g.onnx",
         project_root / "models/buffalo_l/w600k_r50.onnx",
         project_root / "models/inswapper_128.onnx",

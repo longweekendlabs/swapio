@@ -16,12 +16,16 @@ from version import APP_NAME, VERSION
 
 PROJECT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = PROJECT_DIR / "models"
-BUFFALO_FILES = ("det_10g.onnx", "w600k_r50.onnx")
+BUFFALO_FILES = ("2d106det.onnx", "det_10g.onnx", "w600k_r50.onnx")
 BUFFALO_SHA256 = {
+    "2d106det.onnx": "f001b856447c413801ef5c42091ed0cd516fcd21f2d6b79635b1e733a7109dbf",
     "det_10g.onnx": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
     "w600k_r50.onnx": "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43",
 }
-CASTIVO_MODELS = PROJECT_DIR.parent / "app-person-identifier" / "models" / "buffalo_l"
+CASTIVO_MODEL_DIRS = (
+    PROJECT_DIR.parent / "Project_9_Castivo" / "models" / "buffalo_l",
+    PROJECT_DIR.parent / "app-person-identifier" / "models" / "buffalo_l",
+)
 BUFFALO_URL = "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
 SWAPPER_URL = "https://huggingface.co/mikestealth/inswapper/resolve/main/inswapper_128.onnx"
 SWAPPER_SHA256 = "0fa95f167682b4f61edf24f8d66c46b4ab130e8be058f00c8150e6d0170ca72f"
@@ -90,7 +94,7 @@ def install_buffalo(
     on_progress: ProgressFn = _noop_progress,
     should_stop: StopFn = lambda: False,
 ) -> None:
-    component = "Face detector and identity encoder"
+    component = "Face detector, mouth landmarks and identity encoder"
     destination = model_root / "buffalo_l"
     destination.mkdir(parents=True, exist_ok=True)
     missing = [
@@ -105,16 +109,17 @@ def install_buffalo(
         return
     for name in missing:
         (destination / name).unlink(missing_ok=True)
-    if all(
-        (CASTIVO_MODELS / name).is_file()
-        and sha256(CASTIVO_MODELS / name) == BUFFALO_SHA256[name]
-        for name in missing
-    ):
-        print("Reusing the compatible local Castivo face models.")
-        for name in missing:
-            shutil.copy2(CASTIVO_MODELS / name, destination / name)
-        on_progress(component, "Reused compatible local models", 1, 1)
-        return
+    for castivo_models in CASTIVO_MODEL_DIRS:
+        if all(
+            (castivo_models / name).is_file()
+            and sha256(castivo_models / name) == BUFFALO_SHA256[name]
+            for name in missing
+        ):
+            print("Reusing the compatible local Castivo face models.")
+            for name in missing:
+                shutil.copy2(castivo_models / name, destination / name)
+            on_progress(component, "Reused compatible local models", 1, 1)
+            return
 
     with tempfile.TemporaryDirectory(prefix="swapio-models-") as temp_dir:
         archive = Path(temp_dir) / "buffalo_l.zip"

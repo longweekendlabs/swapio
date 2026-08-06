@@ -18,7 +18,7 @@ import core
 import setup_models
 
 COMPONENTS = (
-    "Face detector and identity encoder",
+    "Face detector, mouth landmarks and identity encoder",
     "Fast face swapper",
     "High-quality face swapper",
 )
@@ -138,7 +138,8 @@ class ModelSetupDialog(QDialog):
     def _show_existing_state(self) -> None:
         missing = set(core.missing_models(self.destination))
         mapping = {
-            "Face detector and identity encoder": {
+            "Face detector, mouth landmarks and identity encoder": {
+                "buffalo_l/2d106det.onnx",
                 "buffalo_l/det_10g.onnx",
                 "buffalo_l/w600k_r50.onnx",
             },

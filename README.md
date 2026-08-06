@@ -17,6 +17,7 @@ to the cloud. Swapio is a focused Linux desktop app from Long Weekend Labs.
 - Original files are never modified
 - Failed photos are skipped and reported instead of aborting the batch
 - Repeat batches process only new or changed photos by default
+- Optional inner-mouth and teeth preservation for cleaner open-mouth smiles
 - Oriented pixels and safe EXIF/ICC metadata are retained where possible
 
 Named outputs use `CharacterName_swapped_DDMMYYYY-HHMMSS.ext`. Without a
@@ -78,7 +79,7 @@ Only alter photos you own or have permission to modify.
 
 ## Current scope
 
-Version 0.3.0 processes still images (`jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`,
+Version 0.3.1 processes still images (`jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`,
 and `tiff`). Video, character libraries, and face enhancement are intentionally
 outside the first focused release.
 

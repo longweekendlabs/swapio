@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — 2026-08-06
+
+- Add an enabled-by-default option to preserve the target's inner mouth and teeth.
+- Use the Buffalo 106-point landmark model to isolate the inner-lip contour precisely.
+- Keep lips and surrounding facial identity swapped while restoring only teeth, tongue,
+  and oral-cavity pixels with a softly feathered mask.
+- Avoid applying the preservation mask when the lips are closed.
+- Include the mouth-preservation setting in repeat-batch history so changed settings rerun.
+- Keep the source and preview canvases inside their cards at compact window heights.
+
 ## 0.3.0 — 2026-08-06
 
 - Recalculate the safe sibling output folder whenever a destination folder is selected.

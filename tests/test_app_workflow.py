@@ -19,6 +19,25 @@ QT_APP = QApplication.instance() or QApplication([])
 class AppWorkflowTests(unittest.TestCase):
     @patch("app.read_state", return_value={})
     @patch("app.core.missing_models", return_value=[])
+    def test_workflow_canvases_do_not_overlap_card_controls(self, _missing, _state):
+        window = app.MainWindow()
+        window.resize(1180, 820)
+        window.show()
+        QT_APP.processEvents()
+
+        self.assertLess(window.source_view.geometry().bottom(), window.source_name.geometry().top())
+        self.assertLess(
+            window.preview_view.geometry().bottom(),
+            window.preview_caption.geometry().top(),
+        )
+        self.assertLess(
+            window.source_name.geometry().bottom(),
+            window.character_name.geometry().top(),
+        )
+        window.close()
+
+    @patch("app.read_state", return_value={})
+    @patch("app.core.missing_models", return_value=[])
     def test_adding_folder_replaces_stale_output_suggestion(self, _missing, _state):
         with tempfile.TemporaryDirectory() as temp:
             destination = Path(temp) / "New destination"

@@ -98,6 +98,25 @@ class CoreTests(unittest.TestCase):
             third = engine.batch(source, [target], output, quality="fast")
             self.assertEqual((third["completed"], third["skipped"]), (1, 0))
 
+    def test_changing_mouth_preservation_reruns_completed_photo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.png"
+            target = root / "target.png"
+            output = root / "output"
+            Image.new("RGB", (16, 16), "white").save(source)
+            Image.new("RGB", (16, 16), "navy").save(target)
+            engine = core.SwapEngine()
+            engine.source_face = lambda *_args, **_kwargs: object()
+            engine.swap_array = lambda image, *_args, **_kwargs: (image, 1, 1)
+
+            preserved = engine.batch(source, [target], output, preserve_mouth=True)
+            fully_swapped = engine.batch(source, [target], output, preserve_mouth=False)
+
+            self.assertEqual((preserved["completed"], preserved["skipped"]), (1, 0))
+            self.assertEqual((fully_swapped["completed"], fully_swapped["skipped"]), (1, 0))
+            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 2)
+
     def test_swap_largest_face_only(self):
         small = SimpleNamespace(bbox=np.array([0, 0, 10, 10]))
         large = SimpleNamespace(bbox=np.array([0, 0, 20, 20]))
@@ -136,6 +155,45 @@ class CoreTests(unittest.TestCase):
         tiles = core.SwapEngine._implode_pixels(image, 256)
         restored = core.SwapEngine._explode_pixels(list(tiles), 256, 512)
         np.testing.assert_array_equal(restored, image)
+
+    def test_preserve_inner_mouth_restores_only_landmark_polygon(self):
+        original = np.full((48, 48, 3), 20, dtype=np.uint8)
+        swapped = np.full((48, 48, 3), 200, dtype=np.uint8)
+        landmarks = np.zeros((106, 2), dtype=np.float32)
+        mouth = np.array(
+            [
+                [10, 22],
+                [15, 19],
+                [20, 18],
+                [25, 19],
+                [30, 22],
+                [25, 27],
+                [20, 29],
+                [15, 27],
+            ],
+            dtype=np.float32,
+        )
+        landmarks[core.INNER_MOUTH_106_INDICES] = mouth
+        face = SimpleNamespace(landmark_2d_106=landmarks)
+
+        result = core.SwapEngine._preserve_inner_mouth(swapped, original, face)
+
+        self.assertLess(int(result[23, 20, 0]), 30)
+        self.assertEqual(int(result[2, 2, 0]), 200)
+
+    def test_preserve_inner_mouth_ignores_closed_lips(self):
+        original = np.zeros((40, 40, 3), dtype=np.uint8)
+        swapped = np.full((40, 40, 3), 200, dtype=np.uint8)
+        landmarks = np.zeros((106, 2), dtype=np.float32)
+        landmarks[core.INNER_MOUTH_106_INDICES] = np.array(
+            [[10, 20], [15, 20], [20, 20], [25, 20], [30, 20], [25, 20], [20, 20], [15, 20]],
+            dtype=np.float32,
+        )
+        face = SimpleNamespace(landmark_2d_106=landmarks)
+
+        result = core.SwapEngine._preserve_inner_mouth(swapped, original, face)
+
+        np.testing.assert_array_equal(result, swapped)
 
 
 if __name__ == "__main__":
