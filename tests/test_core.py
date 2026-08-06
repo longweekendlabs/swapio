@@ -117,30 +117,16 @@ class CoreTests(unittest.TestCase):
             self.assertEqual((fully_swapped["completed"], fully_swapped["skipped"]), (1, 0))
             self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 2)
 
-    def test_changing_appearance_settings_reruns_completed_photo(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            source = root / "source.png"
-            target = root / "target.png"
-            output = root / "output"
-            Image.new("RGB", (16, 16), "white").save(source)
-            Image.new("RGB", (16, 16), "navy").save(target)
-            engine = core.SwapEngine()
-            engine.source_face = lambda *_args, **_kwargs: object()
-            engine.swap_array = lambda image, *_args, **_kwargs: (image, 1, 1)
+    def test_careful_quality_adapts_to_closeup_face_size(self):
+        distant = SimpleNamespace(bbox=np.array([100, 100, 260, 300]))
+        closeup = SimpleNamespace(bbox=np.array([100, 80, 500, 650]))
+        extreme = SimpleNamespace(bbox=np.array([20, 20, 760, 780]))
+        image = np.zeros((1000, 1000, 3), dtype=np.uint8)
 
-            unchanged = engine.batch(source, [target], output, hair_mode="off")
-            copper = engine.batch(
-                source,
-                [target],
-                output,
-                hair_mode="copper",
-                hair_strength=70,
-            )
-
-            self.assertEqual((unchanged["completed"], unchanged["skipped"]), (1, 0))
-            self.assertEqual((copper["completed"], copper["skipped"]), (1, 0))
-            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 2)
+        self.assertEqual(core.SwapEngine._boost_size_for_face(image, distant, "careful"), 512)
+        self.assertEqual(core.SwapEngine._boost_size_for_face(image, closeup, "careful"), 1024)
+        self.assertEqual(core.SwapEngine._boost_size_for_face(image, extreme, "careful"), 1024)
+        self.assertEqual(core.SwapEngine._boost_size_for_face(image, closeup, "balanced"), 256)
 
     def test_swap_largest_face_only(self):
         small = SimpleNamespace(bbox=np.array([0, 0, 10, 10]))

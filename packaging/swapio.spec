@@ -14,7 +14,6 @@ if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
         project_root / "models/buffalo_l/w600k_r50.onnx",
         project_root / "models/inswapper_128.onnx",
         project_root / "models/hyperswap_1a_256.onnx",
-        project_root / "models/bisenet_resnet_18.onnx",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -39,7 +38,18 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # These packages belonged to the retired appearance experiments.  Some
+    # optional import paths in third-party libraries can make PyInstaller find
+    # them when they happen to be installed in a reused build environment.
+    # Swapio's face pipeline is ONNX-only and must not ship that stale runtime.
+    excludes=[
+        "torch",
+        "transformers",
+        "safetensors",
+        "tokenizers",
+        "huggingface_hub",
+        "hf_xet",
+    ],
     noarchive=False,
     optimize=0,
 )

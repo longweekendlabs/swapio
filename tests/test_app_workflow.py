@@ -18,30 +18,6 @@ QT_APP = QApplication.instance() or QApplication([])
 
 
 class AppWorkflowTests(unittest.TestCase):
-    @patch(
-        "app.read_state",
-        return_value={
-            "hair_mode": "copper",
-            "hair_strength": 72,
-            "custom_hair_color": "#123456",
-            "skin_match": True,
-        },
-    )
-    @patch("app.core.missing_models", return_value=[])
-    def test_appearance_settings_restore_into_processing_kwargs(self, _missing, _state):
-        window = app.MainWindow()
-
-        self.assertEqual(
-            window._appearance_kwargs(),
-            {
-                "hair_mode": "copper",
-                "custom_hair_color": "#123456",
-                "hair_strength": 72,
-                "skin_match": True,
-            },
-        )
-        window.close()
-
     @patch("app.read_state", return_value={})
     @patch("app.core.missing_models", return_value=[])
     def test_workflow_canvases_do_not_overlap_card_controls(self, _missing, _state):

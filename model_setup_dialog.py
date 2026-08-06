@@ -21,7 +21,6 @@ COMPONENTS = (
     "Face detector, mouth landmarks and identity encoder",
     "Fast face swapper",
     "High-quality face swapper",
-    "Hair and skin parser",
 )
 
 
@@ -146,7 +145,6 @@ class ModelSetupDialog(QDialog):
             },
             "Fast face swapper": {core.SWAPPER_MODEL},
             "High-quality face swapper": {core.HYPERSWAP_MODEL},
-            "Hair and skin parser": {core.FACE_PARSER_MODEL},
         }
         for component, files in mapping.items():
             ready = not bool(files & missing)

@@ -15,14 +15,12 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from appearance import AppearanceProcessor, AppearanceReferences, FACE_PARSER_MODEL
-
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 REQUIRED_BUFFALO_MODELS = {"2d106det.onnx", "det_10g.onnx", "w600k_r50.onnx"}
 SWAPPER_MODEL = "inswapper_128.onnx"
 HYPERSWAP_MODEL = "hyperswap_1a_256.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 3
+PROCESSING_REVISION = 6
 INNER_MOUTH_106_INDICES = np.array([65, 66, 62, 70, 69, 57, 60, 54])
 
 LogFn = Callable[[str], None]
@@ -49,7 +47,6 @@ def model_dir() -> Path:
         all((bundled / "buffalo_l" / name).is_file() for name in REQUIRED_BUFFALO_MODELS)
         and (bundled / SWAPPER_MODEL).is_file()
         and (bundled / HYPERSWAP_MODEL).is_file()
-        and (bundled / FACE_PARSER_MODEL).is_file()
     )
     # A source checkout deliberately keeps its models beside the code. A
     # packaged public build may contain only an empty placeholder; never try
@@ -71,8 +68,6 @@ def missing_models(root: Path | None = None) -> list[str]:
         missing.append(SWAPPER_MODEL)
     if not (root / HYPERSWAP_MODEL).is_file():
         missing.append(HYPERSWAP_MODEL)
-    if not (root / FACE_PARSER_MODEL).is_file():
-        missing.append(FACE_PARSER_MODEL)
     return missing
 
 
@@ -195,10 +190,6 @@ def processing_key(
     output_format: str,
     character_name: str,
     preserve_mouth: bool,
-    hair_mode: str,
-    custom_hair_color: str,
-    hair_strength: int,
-    skin_match: bool,
 ) -> str:
     """Identify an unchanged input and the settings that produced its output."""
     payload = {
@@ -210,10 +201,6 @@ def processing_key(
         "output_format": output_format,
         "character_name": character_name.strip(),
         "preserve_mouth": preserve_mouth,
-        "hair_mode": hair_mode,
-        "custom_hair_color": custom_hair_color.lower(),
-        "hair_strength": hair_strength,
-        "skin_match": skin_match,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -298,16 +285,10 @@ class SwapEngine:
         self.analyser = None
         self.swapper = None
         self.hyperswap = None
-        self.appearance: AppearanceProcessor | None = None
         self.provider = "Not loaded"
 
     def ensure_loaded(self, on_log: LogFn = _noop) -> None:
-        if (
-            self.analyser is not None
-            and self.swapper is not None
-            and self.hyperswap is not None
-            and self.appearance is not None
-        ):
+        if self.analyser is not None and self.swapper is not None and self.hyperswap is not None:
             return
         missing = missing_models(self.models)
         if missing:
@@ -344,10 +325,6 @@ class SwapEngine:
         hyperswap = ort.InferenceSession(
             str(self.models / HYPERSWAP_MODEL), providers=["CPUExecutionProvider"]
         )
-        appearance_session = ort.InferenceSession(
-            str(self.models / FACE_PARSER_MODEL), providers=providers
-        )
-
         analyser_sessions = [
             getattr(model, "session", None) for model in analyser.models.values()
         ]
@@ -365,7 +342,6 @@ class SwapEngine:
         self.analyser = analyser
         self.swapper = swapper
         self.hyperswap = hyperswap
-        self.appearance = AppearanceProcessor(appearance_session)
 
     def source_context(self, source_path: Path | str, on_log: LogFn = _noop):
         self.ensure_loaded(on_log)
@@ -448,6 +424,24 @@ class SwapEngine:
         return self._paste_crop(target, crop, matrix)
 
     @staticmethod
+    def _boost_size_for_face(target: np.ndarray, face, quality: str) -> int:
+        """Use more model samples when a face occupies a large part of the photo."""
+        if quality != "careful":
+            return 256
+        height, width = target.shape[:2]
+        x1, y1, x2, y2 = map(float, face.bbox)
+        face_width = max(x2 - x1, 1.0)
+        face_height = max(y2 - y1, 1.0)
+        width_ratio = face_width / max(width, 1)
+        height_ratio = face_height / max(height, 1)
+        span = max(face_width, face_height)
+        if width_ratio >= 0.40 or height_ratio >= 0.48 or span >= 700:
+            return 1024
+        if width_ratio >= 0.24 or height_ratio >= 0.28 or span >= 480:
+            return 768
+        return 512
+
+    @staticmethod
     def _preserve_inner_mouth(
         swapped: np.ndarray,
         original: np.ndarray,
@@ -467,11 +461,13 @@ class SwapEngine:
 
         mask = np.zeros(original.shape[:2], dtype=np.uint8)
         cv2.fillPoly(mask, [np.rint(points).astype(np.int32)], 255)
-        inset = max(1, round(mouth_width * 0.018))
+        # The contour already follows the inner lip. Only a very small inset is
+        # needed; the old 1.8% erosion clipped tooth edges on large close-ups.
+        inset = max(1, round(mouth_width * 0.008))
         kernel_size = inset * 2 + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
         mask = cv2.erode(mask, kernel, iterations=1)
-        feather = max(mouth_width * 0.018, 0.8)
+        feather = max(mouth_width * 0.022, 0.9)
         mask = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), feather) / 255.0
         mask = mask[:, :, None]
         return (
@@ -486,11 +482,7 @@ class SwapEngine:
         all_faces: bool = False,
         quality: str = "careful",
         preserve_mouth: bool = True,
-        hair_mode: str = "off",
-        custom_hair_color: str = "#b85c32",
-        hair_strength: int = 65,
-        skin_match: bool = False,
-        appearance_references: AppearanceReferences | None = None,
+        on_log: LogFn = _noop,
     ):
         faces = sorted(self.analyser.get(target), key=_face_area, reverse=True)
         if not faces:
@@ -501,67 +493,16 @@ class SwapEngine:
             if quality == "fast":
                 result = self.swapper.get(result, face, source_face, paste_back=True)
             else:
-                boost_size = 512 if quality == "careful" else 256
+                boost_size = self._boost_size_for_face(target, face, quality)
+                if boost_size > 512:
+                    on_log(
+                        f"Close-up face detected: using adaptive {boost_size}px detail "
+                        "for cleaner eyes, lips and teeth."
+                    )
                 result = self._hyperswap_face(result, face, source_face, boost_size)
             if preserve_mouth:
                 result = self._preserve_inner_mouth(result, target, face)
-        if self.appearance and (hair_mode != "off" or skin_match):
-            result = self.appearance.apply(
-                result,
-                target,
-                selected,
-                hair_mode=hair_mode,
-                custom_hair_color=custom_hair_color,
-                hair_strength=hair_strength / 100.0,
-                skin_match=skin_match,
-                references=appearance_references or AppearanceReferences(),
-            )
         return result, len(selected), len(faces)
-
-    def _appearance_references(
-        self,
-        source_image: np.ndarray,
-        source_face,
-        *,
-        hair_mode: str,
-        skin_match: bool,
-        on_log: LogFn,
-    ) -> AppearanceReferences:
-        if not self.appearance or (hair_mode != "source" and not skin_match):
-            return AppearanceReferences()
-        references = self.appearance.references(
-            source_image,
-            source_face,
-            need_hair=hair_mode == "source",
-            need_skin=skin_match,
-        )
-        if hair_mode == "source" and references.hair_lab is None:
-            on_log("Appearance: source hair could not be isolated; hair matching will be skipped.")
-        if skin_match and references.skin_lab is None:
-            on_log("Appearance: source skin could not be isolated; skin matching will be skipped.")
-        return references
-
-    @staticmethod
-    def _log_appearance(
-        *,
-        hair_mode: str,
-        custom_hair_color: str,
-        hair_strength: int,
-        skin_match: bool,
-        on_log: LogFn,
-    ) -> None:
-        details = []
-        if hair_mode != "off":
-            hair_name = (
-                f"custom {custom_hair_color.upper()}"
-                if hair_mode == "custom"
-                else hair_mode.replace("_", " ")
-            )
-            details.append(f"hair {hair_name} at {hair_strength}%")
-        if skin_match:
-            details.append("conservative source skin matching")
-        if details:
-            on_log("Appearance: " + "; ".join(details) + ".")
 
     def preview(
         self,
@@ -570,45 +511,19 @@ class SwapEngine:
         all_faces: bool = False,
         quality: str = "careful",
         preserve_mouth: bool = True,
-        hair_mode: str = "off",
-        custom_hair_color: str = "#b85c32",
-        hair_strength: int = 65,
-        skin_match: bool = False,
         on_log: LogFn = _noop,
     ) -> dict:
-        if hair_mode == "source" or skin_match:
-            source_image, source = self.source_context(source_path, on_log)
-            references = self._appearance_references(
-                source_image,
-                source,
-                hair_mode=hair_mode,
-                skin_match=skin_match,
-                on_log=on_log,
-            )
-        else:
-            source = self.source_face(source_path, on_log)
-            references = AppearanceReferences()
-        self._log_appearance(
-            hair_mode=hair_mode,
-            custom_hair_color=custom_hair_color,
-            hair_strength=hair_strength,
-            skin_match=skin_match,
-            on_log=on_log,
-        )
+        source = self.source_face(source_path, on_log)
         target = load_image(target_path)
         if target is None:
             raise RuntimeError(f"Could not read destination image: {target_path}")
         result, swapped, detected = self.swap_array(
             target,
             source,
-            all_faces,
-            quality,
-            preserve_mouth,
-            hair_mode,
-            custom_hair_color,
-            hair_strength,
-            skin_match,
-            references,
+            all_faces=all_faces,
+            quality=quality,
+            preserve_mouth=preserve_mouth,
+            on_log=on_log,
         )
         return {
             "image": result,
@@ -617,8 +532,6 @@ class SwapEngine:
             "detected": detected,
             "provider": self.provider,
             "quality": quality,
-            "hair_mode": hair_mode,
-            "skin_match": skin_match,
         }
 
     def batch(
@@ -631,10 +544,6 @@ class SwapEngine:
         output_format: str = "png",
         character_name: str = "",
         preserve_mouth: bool = True,
-        hair_mode: str = "off",
-        custom_hair_color: str = "#b85c32",
-        hair_strength: int = 65,
-        skin_match: bool = False,
         skip_completed: bool = True,
         on_log: LogFn = _noop,
         on_progress: ProgressFn = _noop,
@@ -653,10 +562,6 @@ class SwapEngine:
                 output_format=output_format,
                 character_name=character_name,
                 preserve_mouth=preserve_mouth,
-                hair_mode=hair_mode,
-                custom_hair_color=custom_hair_color,
-                hair_strength=hair_strength,
-                skin_match=skin_match,
             )
             keyed_targets.append((target_path, key))
         pending = [
@@ -665,40 +570,21 @@ class SwapEngine:
             if not skip_completed or history.completed_output(key) is None
         ]
         source = None
-        references = AppearanceReferences()
         if pending:
-            if hair_mode == "source" or skin_match:
-                source_image, source = self.source_context(source_path, on_log)
-                references = self._appearance_references(
-                    source_image,
-                    source,
-                    hair_mode=hair_mode,
-                    skin_match=skin_match,
-                    on_log=on_log,
-                )
-            else:
-                source = self.source_face(source_path, on_log)
+            source = self.source_face(source_path, on_log)
         completed = 0
         skipped = 0
         errors: list[dict] = []
         outputs: list[str] = []
         total = len(target_paths)
         batch_date_tag = datetime.now().strftime("%d%m%Y-%H%M%S")
-        detail = {"careful": "Careful 512px", "balanced": "Balanced 256px", "fast": "Fast 128px"}.get(
+        detail = {"careful": "Careful adaptive 512–1024px", "balanced": "Balanced 256px", "fast": "Fast 128px"}.get(
             quality, quality
         )
         on_log(
             f"Processing {total} destination photo(s) at {detail}. "
             "Originals stay untouched."
         )
-        self._log_appearance(
-            hair_mode=hair_mode,
-            custom_hair_color=custom_hair_color,
-            hair_strength=hair_strength,
-            skin_match=skin_match,
-            on_log=on_log,
-        )
-
         for index, (target_path, key) in enumerate(keyed_targets, start=1):
             if should_stop():
                 on_log("Stopped by user.")
@@ -720,14 +606,10 @@ class SwapEngine:
                 result, swapped, detected = self.swap_array(
                     target,
                     source,
-                    all_faces,
-                    quality,
-                    preserve_mouth,
-                    hair_mode,
-                    custom_hair_color,
-                    hair_strength,
-                    skin_match,
-                    references,
+                    all_faces=all_faces,
+                    quality=quality,
+                    preserve_mouth=preserve_mouth,
+                    on_log=on_log,
                 )
                 suffix = ".png" if output_format == "png" else ".jpg"
                 output_path = unique_output_path(

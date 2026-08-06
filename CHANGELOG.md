@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.2 — 2026-08-06
+
+- Detect close-up faces and raise Careful processing from 512px to 768px or 1024px automatically.
+- Preserve more of the target teeth edges and use scale-aware mouth feathering on large faces.
+- Enable inner-mouth and teeth preservation by default for new installations.
+- Remove hair color, face/body skin-tone matching, appearance-model downloads, and their runtime.
+- Keep Model Management focused on the detector, identity encoder, and two face swappers.
+- Bump the batch-processing revision so existing photos are regenerated with the close-up fix.
+
+## 0.4.1 — 2026-08-06
+
+- Add Settings and Model Management pages under the hamburger menu.
+- Add a resumable, checksum-verified optional FASHN Human Parser download.
+- Extend source skin-tone matching to visible torso, arms, hands, legs, and feet.
+- Keep target lighting and texture while transferring source tone in preview and batch.
+- Pause hair recoloring after the evaluated large model failed real-photo quality checks.
+- Keep optional appearance models out of the application package and Git history.
+
 ## 0.4.0 — 2026-08-06
 
 - Add offline photo appearance controls to preview and batch processing.
