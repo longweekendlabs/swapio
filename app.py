@@ -533,6 +533,16 @@ class MainWindow(QMainWindow):
         grid.addWidget(quality_label, 2, 0)
         grid.addWidget(self.quality_mode, 2, 1)
         grid.addWidget(self.output_format, 2, 2)
+        history_label = QLabel("Repeat batches")
+        history_label.setObjectName("fieldLabel")
+        self.skip_completed = QCheckBox("Skip unchanged photos already completed")
+        self.skip_completed.setChecked(True)
+        self.skip_completed.setToolTip(
+            "Swapio records successful outputs in the output folder and only processes new or changed photos."
+        )
+        self.skip_completed.stateChanged.connect(self._save_state)
+        grid.addWidget(history_label, 3, 0)
+        grid.addWidget(self.skip_completed, 3, 1, 1, 2)
         return box
 
     def _build_actions(self):
@@ -630,6 +640,7 @@ class MainWindow(QMainWindow):
         if path:
             folder = Path(path)
             self._add_targets(core.image_files(folder, recursive=True))
+            self.output_edit.setText(str(core.suggested_output_dir(folder)))
             self._remember_folder("target_dir", folder)
 
     def _add_targets(self, paths):
@@ -660,10 +671,7 @@ class MainWindow(QMainWindow):
         """Choose a sibling folder so recursive imports never ingest outputs."""
         if not self.targets:
             return Path.home() / "Swapio Output"
-        source_folder = self.targets[0].parent
-        if source_folder.name:
-            return source_folder.parent / f"{source_folder.name} - Swapio Output"
-        return source_folder / "Swapio Output"
+        return core.suggested_output_dir(self.targets[0].parent)
 
     def _remove_selected(self):
         row = self.target_list.currentRow()
@@ -790,6 +798,7 @@ class MainWindow(QMainWindow):
             quality=self._quality(),
             output_format=self._output_format(),
             character_name=self.character_name.text().strip(),
+            skip_completed=self.skip_completed.isChecked(),
         )
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.progress.connect(self._progress)
@@ -803,18 +812,21 @@ class MainWindow(QMainWindow):
         self.progress.setMaximum(total)
         self.progress.setValue(done)
         self.progress.setFormat(
-            f"{done}/{total} — {counts.get('completed', 0)} saved, {counts.get('failed', 0)} skipped"
+            f"{done}/{total} — {counts.get('completed', 0)} saved, "
+            f"{counts.get('skipped', 0)} unchanged, {counts.get('failed', 0)} failed"
         )
 
     def _batch_ready(self, result: dict):
         self._set_running(False)
-        self.open_button.setEnabled(bool(result["outputs"]))
+        self.open_button.setEnabled(bool(result["outputs"]) or result["skipped"] > 0)
         label = "Stopped" if result["stopped"] else "Complete"
         self.status_label.setText(
-            f"{label} — {result['completed']} saved, {result['failed']} skipped"
+            f"{label} — {result['completed']} saved, {result['skipped']} unchanged, "
+            f"{result['failed']} failed"
         )
         self.progress.setFormat(
-            f"{result['completed']} saved — {result['failed']} skipped — originals untouched"
+            f"{result['completed']} saved — {result['skipped']} unchanged — "
+            f"{result['failed']} failed — originals untouched"
         )
         self._refresh_model_status()
         if not result["stopped"]:
@@ -822,7 +834,8 @@ class MainWindow(QMainWindow):
                 self,
                 "Batch complete",
                 f"Saved {result['completed']} swapped photo(s).\n"
-                f"Skipped {result['failed']}.\n\n"
+                f"Skipped {result['skipped']} unchanged photo(s).\n"
+                f"Failed {result['failed']}.\n\n"
                 f"Output: {self.last_output}",
             )
 
@@ -899,12 +912,14 @@ class MainWindow(QMainWindow):
         output_format = self._state.get("output_format", "png")
         format_index = self.output_format.findData(output_format)
         self.output_format.setCurrentIndex(max(format_index, 0))
+        self.skip_completed.setChecked(bool(self._state.get("skip_completed", True)))
 
     def _save_state(self):
         self._state["output_dir"] = self.output_edit.text().strip()
         self._state["face_mode"] = self.face_mode.currentIndex()
         self._state["quality"] = self._quality()
         self._state["output_format"] = self._output_format()
+        self._state["skip_completed"] = self.skip_completed.isChecked()
         write_state(self._state)
 
     def closeEvent(self, event):

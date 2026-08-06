@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 — 2026-08-06
+
+- Recalculate the safe sibling output folder whenever a destination folder is selected.
+- Keep a persistent `.swapio-history.json` manifest inside each output folder.
+- Skip unchanged photos already completed with the same source and processing settings.
+- Reprocess photos when an input changes, settings change, the output is removed, or the
+  repeat-batch protection is deliberately disabled.
+- Report newly saved, unchanged, and failed photos as separate batch counts.
+
 ## 0.2.0 — 2026-08-05
 
 - Prevent black HyperSwap previews caused by non-finite CUDA model output.

@@ -65,6 +65,39 @@ class CoreTests(unittest.TestCase):
 
             self.assertEqual(output.name, "Ada_Lovelace_swapped_05082026-143012.png")
 
+    def test_suggested_output_is_a_sibling_of_destination_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "Incoming"
+            destination.mkdir()
+
+            self.assertEqual(
+                core.suggested_output_dir(destination),
+                Path(temp) / "Incoming - Swapio Output",
+            )
+
+    def test_repeat_batch_skips_unchanged_completed_photo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.png"
+            target = root / "target.png"
+            output = root / "output"
+            Image.new("RGB", (16, 16), "white").save(source)
+            Image.new("RGB", (16, 16), "navy").save(target)
+            engine = core.SwapEngine()
+            engine.source_face = lambda *_args, **_kwargs: object()
+            engine.swap_array = lambda image, *_args, **_kwargs: (image, 1, 1)
+
+            first = engine.batch(source, [target], output, quality="fast")
+            second = engine.batch(source, [target], output, quality="fast")
+
+            self.assertEqual((first["completed"], first["skipped"]), (1, 0))
+            self.assertEqual((second["completed"], second["skipped"]), (0, 1))
+            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 1)
+
+            Path(first["outputs"][0]).unlink()
+            third = engine.batch(source, [target], output, quality="fast")
+            self.assertEqual((third["completed"], third["skipped"]), (1, 0))
+
     def test_swap_largest_face_only(self):
         small = SimpleNamespace(bbox=np.array([0, 0, 10, 10]))
         large = SimpleNamespace(bbox=np.array([0, 0, 20, 20]))

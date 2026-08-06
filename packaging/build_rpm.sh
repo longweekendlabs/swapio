@@ -34,7 +34,7 @@ if [[ $bundle_models -eq 1 && $gpu -eq 1 ]]; then
 fi
 
 version="$(.venv/bin/python -c 'from version import VERSION; print(VERSION)')"
-release="3"
+release="1"
 architecture="$(uname -m)"
 top="$project_dir/rpm-build"
 stage="$top/stage"

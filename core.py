@@ -2,6 +2,8 @@
 """Offline face-swapping engine for Swapio."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -17,6 +19,8 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 REQUIRED_BUFFALO_MODELS = {"det_10g.onnx", "w600k_r50.onnx"}
 SWAPPER_MODEL = "inswapper_128.onnx"
 HYPERSWAP_MODEL = "hyperswap_1a_256.onnx"
+HISTORY_FILENAME = ".swapio-history.json"
+PROCESSING_REVISION = 1
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[int, int, dict], None]
@@ -158,10 +162,97 @@ def image_files(folder: Path | str, recursive: bool = True) -> list[Path]:
     )
 
 
+def suggested_output_dir(destination_folder: Path | str) -> Path:
+    """Return a safe sibling output folder for a destination folder."""
+    folder = Path(destination_folder).expanduser().resolve()
+    if folder.name:
+        return folder.parent / f"{folder.name} - Swapio Output"
+    return folder / "Swapio Output"
+
+
+def _file_identity(path: Path | str) -> dict[str, str | int]:
+    resolved = Path(path).expanduser().resolve()
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def processing_key(
+    source_path: Path | str,
+    target_path: Path | str,
+    *,
+    all_faces: bool,
+    quality: str,
+    output_format: str,
+    character_name: str,
+) -> str:
+    """Identify an unchanged input and the settings that produced its output."""
+    payload = {
+        "revision": PROCESSING_REVISION,
+        "source": _file_identity(source_path),
+        "target": _file_identity(target_path),
+        "all_faces": all_faces,
+        "quality": quality,
+        "output_format": output_format,
+        "character_name": character_name.strip(),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class ProcessingHistory:
+    """Persistent per-output-folder record used to avoid duplicate work."""
+
+    def __init__(self, output_dir: Path | str):
+        self.output_dir = Path(output_dir).expanduser().resolve()
+        self.path = self.output_dir / HISTORY_FILENAME
+        self.records: dict[str, dict] = {}
+        try:
+            data = json.loads(self.path.read_text())
+            if data.get("version") == 1 and isinstance(data.get("records"), dict):
+                self.records = data["records"]
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def completed_output(self, key: str) -> Path | None:
+        record = self.records.get(key)
+        if not isinstance(record, dict):
+            return None
+        output_name = record.get("output")
+        if not isinstance(output_name, str) or Path(output_name).name != output_name:
+            return None
+        output = self.output_dir / output_name
+        return output if output.is_file() else None
+
+    def record(self, key: str, target: Path, output: Path) -> bool:
+        self.records[key] = {
+            "target": str(target.expanduser().resolve()),
+            "output": output.name,
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        return self._save()
+
+    def _save(self) -> bool:
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps({"version": 1, "records": self.records}, indent=2)
+            )
+            temporary.replace(self.path)
+            return True
+        except OSError:
+            return False
+
+
 @dataclass
 class SwapSummary:
     total: int
     completed: int
+    skipped: int
     failed: int
     stopped: bool
     outputs: list[str]
@@ -172,6 +263,7 @@ class SwapSummary:
         return {
             "total": self.total,
             "completed": self.completed,
+            "skipped": self.skipped,
             "failed": self.failed,
             "stopped": self.stopped,
             "outputs": self.outputs,
@@ -377,14 +469,33 @@ class SwapEngine:
         quality: str = "careful",
         output_format: str = "png",
         character_name: str = "",
+        skip_completed: bool = True,
         on_log: LogFn = _noop,
         on_progress: ProgressFn = _noop,
         should_stop: StopFn = lambda: False,
     ) -> dict:
         target_paths = [Path(path) for path in targets]
-        output_dir = Path(output_dir)
-        source = self.source_face(source_path, on_log)
+        output_dir = Path(output_dir).expanduser().resolve()
+        history = ProcessingHistory(output_dir)
+        keyed_targets: list[tuple[Path, str]] = []
+        for target_path in target_paths:
+            key = processing_key(
+                source_path,
+                target_path,
+                all_faces=all_faces,
+                quality=quality,
+                output_format=output_format,
+                character_name=character_name,
+            )
+            keyed_targets.append((target_path, key))
+        pending = [
+            (target, key)
+            for target, key in keyed_targets
+            if not skip_completed or history.completed_output(key) is None
+        ]
+        source = self.source_face(source_path, on_log) if pending else None
         completed = 0
+        skipped = 0
         errors: list[dict] = []
         outputs: list[str] = []
         total = len(target_paths)
@@ -397,10 +508,20 @@ class SwapEngine:
             "Originals stay untouched."
         )
 
-        for index, target_path in enumerate(target_paths, start=1):
+        for index, (target_path, key) in enumerate(keyed_targets, start=1):
             if should_stop():
                 on_log("Stopped by user.")
                 break
+            previous_output = history.completed_output(key) if skip_completed else None
+            if previous_output is not None:
+                skipped += 1
+                on_log(f"↷ {target_path.name}: unchanged; already saved as {previous_output.name}")
+                on_progress(
+                    index,
+                    total,
+                    {"completed": completed, "skipped": skipped, "failed": len(errors)},
+                )
+                continue
             try:
                 target = load_image(target_path)
                 if target is None:
@@ -415,6 +536,8 @@ class SwapEngine:
                     name_prefix=character_name,
                 )
                 write_image(output_path, result, metadata_source=target_path)
+                if not history.record(key, target_path, output_path):
+                    on_log("! Could not update batch history; this photo may run again later.")
                 outputs.append(str(output_path))
                 completed += 1
                 detail = f"{swapped} of {detected} face(s)" if detected > 1 else "1 face"
@@ -423,12 +546,17 @@ class SwapEngine:
                 message = f"{type(exc).__name__}: {exc}"
                 errors.append({"path": str(target_path), "error": message})
                 on_log(f"! {target_path.name}: {message}")
-            on_progress(index, total, {"completed": completed, "failed": len(errors)})
+            on_progress(
+                index,
+                total,
+                {"completed": completed, "skipped": skipped, "failed": len(errors)},
+            )
 
-        stopped = should_stop() and completed + len(errors) < total
+        stopped = should_stop() and completed + skipped + len(errors) < total
         return SwapSummary(
             total=total,
             completed=completed,
+            skipped=skipped,
             failed=len(errors),
             stopped=stopped,
             outputs=outputs,
