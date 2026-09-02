@@ -4,9 +4,11 @@
 
 [![Latest release](https://img.shields.io/github/v/release/longweekendlabs/swapio?label=download)](https://github.com/longweekendlabs/swapio/releases/latest)
 [![License](https://img.shields.io/badge/license-All%20rights%20reserved-black)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-informational)](https://github.com/longweekendlabs/swapio/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20arm64-informational)](https://github.com/longweekendlabs/swapio/releases/latest)
 
 Pick one source portrait, point Swapio at a folder of destination photos, and it swaps that face into every one of them. Nothing is uploaded and nothing is sent to a cloud service: after the one-time model download, the app does not use the network at all.
+
+Swapio is free.
 
 ### [Download the latest release](https://github.com/longweekendlabs/swapio/releases/latest)
 
@@ -27,6 +29,12 @@ HyperSwap is the high-detail engine; InSwapper is there when you want a quick dr
 Swapio changes facial identity and leaves everything else alone: the destination pose, expression, body, skin, hair, and image dimensions all stay. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.
 
 Inner mouth and teeth are preserved on the target, which is what keeps open-mouth smiles from turning strange. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
+
+## Download
+
+RPM, DEB and AppImage, for Linux on x86_64 and arm64. Grab one from the [latest release](https://github.com/longweekendlabs/swapio/releases/latest).
+
+The package carries no face models and no CUDA libraries. On first launch Swapio lists the models it needs, downloads them from their original publishers, verifies each checksum, and then never touches the network again. On an NVIDIA machine it uses the CUDA you already have; without one it runs on CPU.
 
 ## Formats and naming
 
