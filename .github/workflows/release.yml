@@ -12,6 +12,9 @@ on:
 
 permissions:
   contents: write
+  # Deleting this run's own artifacts needs actions:write; contents:write is not
+  # enough and the API answers 403 without it.
+  actions: write
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
