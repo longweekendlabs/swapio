@@ -34,6 +34,11 @@ HYPERSWAP_URL = (
     "hyperswap_1a_256.onnx"
 )
 HYPERSWAP_SHA256 = "c0e98a8a03a238f461ed3d2570e426b49f46745ee400854a60dceeb70c246add"
+ENHANCER_URL = (
+    "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/"
+    "gpen_bfr_1024.onnx"
+)
+ENHANCER_SHA256 = "bcd31aa52110a2005efc96abbab4546d57e42482648f08715b552423d96b381b"
 
 ProgressFn = Callable[[str, str, int, int], None]
 StopFn = Callable[[], bool]
@@ -202,6 +207,35 @@ def install_hyperswap(
         partial.unlink(missing_ok=True)
 
 
+def install_enhancer(
+    model_root: Path = MODEL_DIR,
+    on_progress: ProgressFn = _noop_progress,
+    should_stop: StopFn = lambda: False,
+) -> None:
+    component = "Face restoration"
+    destination = model_root / "gpen_bfr_1024.onnx"
+    if destination.is_file() and sha256(destination) == ENHANCER_SHA256:
+        print("Face restoration model is already installed and verified.")
+        on_progress(component, "Installed and verified", 1, 1)
+        return
+    destination.unlink(missing_ok=True)
+    partial = destination.with_suffix(".onnx.part")
+    partial.unlink(missing_ok=True)
+    try:
+        download(ENHANCER_URL, partial, component, on_progress, should_stop)
+        on_progress(component, "Verifying checksum", 0, 0)
+        actual = sha256(partial)
+        if actual != ENHANCER_SHA256:
+            raise RuntimeError(
+                "Downloaded face restoration checksum did not match. "
+                f"Expected {ENHANCER_SHA256}, got {actual}."
+            )
+        partial.replace(destination)
+        on_progress(component, "Installed and verified", 1, 1)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 def install_all(
     model_root: Path = MODEL_DIR,
     on_progress: ProgressFn = _noop_progress,
@@ -216,6 +250,9 @@ def install_all(
     if should_stop():
         raise DownloadCancelled("Model download cancelled.")
     install_hyperswap(model_root, on_progress, should_stop)
+    if should_stop():
+        raise DownloadCancelled("Model download cancelled.")
+    install_enhancer(model_root, on_progress, should_stop)
 
 
 def main() -> int:

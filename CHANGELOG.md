@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.3 — 2026-09-02
+
+- Add a **Best** processing quality that restores the swapped face with GPEN-BFR 1024.
+- Recover eyelash, eyelid, iris and tooth detail that the 256px swapper cannot resolve.
+- Fix soft swaps caused by bilinear resampling: align and paste faces with Lanczos instead.
+- Download and verify the face restoration model alongside the existing four.
+- Bump the batch-processing revision so existing photos are regenerated with the sharper resampling.
+
 ## 0.4.2 — 2026-08-06
 
 - Detect close-up faces and raise Careful processing from 512px to 768px or 1024px automatically.

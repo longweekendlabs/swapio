@@ -20,7 +20,7 @@ QT_APP = QApplication.instance() or QApplication([])
 
 class ModelSetupTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(VERSION, "0.4.2")
+        self.assertEqual(VERSION, "0.4.3")
 
     def test_download_requires_license_acknowledgement(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(

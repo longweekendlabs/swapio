@@ -2,7 +2,13 @@
 
 **Offline batch face swapping for still photos.**
 
+[![Latest release](https://img.shields.io/github/v/release/longweekendlabs/swapio?label=download)](https://github.com/longweekendlabs/swapio/releases/latest)
+[![License](https://img.shields.io/badge/license-All%20rights%20reserved-black)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-informational)](https://github.com/longweekendlabs/swapio/releases/latest)
+
 Pick one source portrait, point Swapio at a folder of destination photos, and it swaps that face into every one of them. Nothing is uploaded and nothing is sent to a cloud service: after the one-time model download, the app does not use the network at all.
+
+### [Download the latest release](https://github.com/longweekendlabs/swapio/releases/latest)
 
 ## One face in, a whole folder out
 
@@ -10,11 +16,11 @@ One source portrait per run. Feed it individual photos or a whole folder tree, p
 
 Repeat a batch and it processes only new or changed photos by default. A photo that fails is skipped and reported at the end rather than killing the run, so a bad file in the middle of two hundred does not cost you the batch.
 
-## Three quality modes, and they mean something
+## Four quality modes, and they mean something
 
-Careful mode works adaptively between 512 and 1024 pixels, detecting close-up faces and raising HyperSwap detail to 768 or 1024 automatically. Balanced runs at 256, and fast at 128 for drafts.
+Best rebuilds the swapped face after the swap, so eyelashes, eyelids, irises and teeth survive at a detail no 256 pixel swapper can reach. Careful works adaptively between 512 and 1024 pixels, detecting close-up faces and raising HyperSwap detail to 768 or 1024 automatically. Balanced runs at 256, and Fast at 128 for drafts.
 
-HyperSwap is the high-detail engine; InSwapper is there when you want a quick draft. On an NVIDIA machine, detection and fast drafts use CUDA, while HyperSwap quality modes run on CPU for stability.
+HyperSwap is the high-detail engine; InSwapper is there when you want a quick draft. On an NVIDIA machine, detection, drafts and face restoration run on CUDA, and restoration falls back to CPU by itself on a card that cannot produce a usable result. HyperSwap quality modes stay on CPU for stability.
 
 ## What it preserves
 
@@ -36,7 +42,7 @@ The application code and the pretrained models carry different licences. Insight
 
 ## Scope
 
-Still images only, at version 0.4.2. Video, body reshaping, character libraries, and face enhancement are outside this release. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
+Still images only, at version 0.4.3. Video, body reshaping, and character libraries are outside this release. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
 
 ## Feedback
 

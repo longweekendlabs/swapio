@@ -19,9 +19,24 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 REQUIRED_BUFFALO_MODELS = {"2d106det.onnx", "det_10g.onnx", "w600k_r50.onnx"}
 SWAPPER_MODEL = "inswapper_128.onnx"
 HYPERSWAP_MODEL = "hyperswap_1a_256.onnx"
+ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 6
+PROCESSING_REVISION = 7
 INNER_MOUTH_106_INDICES = np.array([65, 66, 62, 70, 69, 57, 60, 54])
+# Face restoration works on its own FFHQ alignment, not the swapper's ArcFace one.
+ENHANCER_SIZE = 1024
+ENHANCER_BLEND = 0.8
+FFHQ_TEMPLATE = np.array(
+    [
+        [0.37691676, 0.46864664],
+        [0.62285697, 0.46912813],
+        [0.50123859, 0.61331904],
+        [0.39308822, 0.72541100],
+        [0.61150205, 0.72490465],
+    ],
+    dtype=np.float32,
+)
+BOOSTED_QUALITIES = frozenset({"careful", "best"})
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[int, int, dict], None]
@@ -47,6 +62,7 @@ def model_dir() -> Path:
         all((bundled / "buffalo_l" / name).is_file() for name in REQUIRED_BUFFALO_MODELS)
         and (bundled / SWAPPER_MODEL).is_file()
         and (bundled / HYPERSWAP_MODEL).is_file()
+        and (bundled / ENHANCER_MODEL).is_file()
     )
     # A source checkout deliberately keeps its models beside the code. A
     # packaged public build may contain only an empty placeholder; never try
@@ -68,6 +84,8 @@ def missing_models(root: Path | None = None) -> list[str]:
         missing.append(SWAPPER_MODEL)
     if not (root / HYPERSWAP_MODEL).is_file():
         missing.append(HYPERSWAP_MODEL)
+    if not (root / ENHANCER_MODEL).is_file():
+        missing.append(ENHANCER_MODEL)
     return missing
 
 
@@ -285,6 +303,9 @@ class SwapEngine:
         self.analyser = None
         self.swapper = None
         self.hyperswap = None
+        self.enhancer = None
+        self.accelerated_providers = ["CPUExecutionProvider"]
+        self.enhancer_cpu_only = False
         self.provider = "Not loaded"
 
     def ensure_loaded(self, on_log: LogFn = _noop) -> None:
@@ -309,6 +330,7 @@ class SwapEngine:
             if want_cuda
             else ["CPUExecutionProvider"]
         )
+        self.accelerated_providers = providers
         on_log("Loading local face models...")
         # FaceAnalysis expects <root>/models/buffalo_l.
         analyser = FaceAnalysis(
@@ -342,6 +364,35 @@ class SwapEngine:
         self.analyser = analyser
         self.swapper = swapper
         self.hyperswap = hyperswap
+
+    def _ensure_enhancer(self, on_log: LogFn = _noop):
+        """Load the face restoration model the first time Best quality runs."""
+        if self.enhancer is not None:
+            return self.enhancer
+        path = self.models / ENHANCER_MODEL
+        if not path.is_file():
+            raise RuntimeError(
+                f"Best quality needs {ENHANCER_MODEL}. "
+                "Run setup_models.py from the Swapio folder."
+            )
+        import onnxruntime as ort
+
+        on_log("Loading the face restoration model...")
+        # Unlike HyperSwap, restoration returns valid pixels through CUDA, so it
+        # starts accelerated. _restore_face falls back permanently to CPU for the
+        # rest of the session if a card cannot actually deliver a usable result.
+        providers = (
+            ["CPUExecutionProvider"]
+            if self.enhancer_cpu_only
+            else self.accelerated_providers
+        )
+        self.enhancer = ort.InferenceSession(str(path), providers=providers)
+        active = self.enhancer.get_providers()[0]
+        on_log(
+            "Face restoration ready on "
+            + ("CUDA." if active == "CUDAExecutionProvider" else "CPU.")
+        )
+        return self.enhancer
 
     def source_context(self, source_path: Path | str, on_log: LogFn = _noop):
         self.ensure_loaded(on_log)
@@ -380,7 +431,9 @@ class SwapEngine:
     def _paste_crop(target: np.ndarray, crop: np.ndarray, matrix: np.ndarray) -> np.ndarray:
         inverse = cv2.invertAffineTransform(matrix)
         height, width = target.shape[:2]
-        warped = cv2.warpAffine(crop, inverse, (width, height), borderValue=0.0)
+        warped = cv2.warpAffine(
+            crop, inverse, (width, height), flags=cv2.INTER_LANCZOS4, borderValue=0.0
+        )
         mask = cv2.warpAffine(
             np.full(crop.shape[:2], 255, dtype=np.float32),
             inverse,
@@ -403,7 +456,18 @@ class SwapEngine:
         from insightface.utils import face_align
 
         model_size = 256
-        crop, matrix = face_align.norm_crop2(target, target_face.kps, boost_size)
+        # norm_crop2 resamples bilinearly. The aligned crop is usually an upscale
+        # of the face region, and bilinear softens exactly the eyelash, lid and
+        # iris detail the quality path exists to keep. Reuse the same alignment
+        # matrix and resample with Lanczos instead.
+        matrix = face_align.estimate_norm(target_face.kps, boost_size)
+        crop = cv2.warpAffine(
+            target,
+            matrix,
+            (boost_size, boost_size),
+            flags=cv2.INTER_LANCZOS4,
+            borderValue=0.0,
+        )
         tiles = self._implode_pixels(crop, model_size)
         source_embedding = source_face.normed_embedding.reshape(1, -1).astype(np.float32)
         swapped_tiles = []
@@ -426,7 +490,7 @@ class SwapEngine:
     @staticmethod
     def _boost_size_for_face(target: np.ndarray, face, quality: str) -> int:
         """Use more model samples when a face occupies a large part of the photo."""
-        if quality != "careful":
+        if quality not in BOOSTED_QUALITIES:
             return 256
         height, width = target.shape[:2]
         x1, y1, x2, y2 = map(float, face.bbox)
@@ -440,6 +504,92 @@ class SwapEngine:
         if width_ratio >= 0.24 or height_ratio >= 0.28 or span >= 480:
             return 768
         return 512
+
+    @staticmethod
+    def _paste_restored(target: np.ndarray, crop: np.ndarray, matrix: np.ndarray) -> np.ndarray:
+        """Blend an FFHQ-aligned crop back with a soft box mask.
+
+        The swapper's paste erodes a tenth of the crop away, which is right for
+        an ArcFace crop that stops at the jaw. An FFHQ crop reaches into hair
+        and background, so it only needs a narrow feathered border to hide the
+        seam without eating the restored hairline.
+        """
+        size = crop.shape[0]
+        inset = max(int(size * 0.06), 1)
+        box = np.zeros((size, size), dtype=np.float32)
+        box[inset : size - inset, inset : size - inset] = 1.0
+        box = cv2.GaussianBlur(box, (0, 0), size * 0.03)
+        inverse = cv2.invertAffineTransform(matrix)
+        height, width = target.shape[:2]
+        warped = cv2.warpAffine(
+            crop, inverse, (width, height), flags=cv2.INTER_LANCZOS4, borderValue=0.0
+        )
+        mask = cv2.warpAffine(box, inverse, (width, height), borderValue=0.0)
+        mask = np.clip(mask, 0.0, 1.0)[:, :, None]
+        return (mask * warped + (1 - mask) * target.astype(np.float32)).astype(np.uint8)
+
+    def _run_enhancer(self, session, blob: np.ndarray, on_log: LogFn = _noop) -> np.ndarray:
+        """Run restoration, retiring a GPU that cannot produce usable pixels."""
+        feed = {"input": blob[None].astype(np.float32)}
+        accelerated = session.get_providers()[0] != "CPUExecutionProvider"
+        try:
+            prediction = session.run(None, feed)[0][0]
+            if np.isfinite(prediction).all():
+                return prediction
+            reason = "returned invalid pixels"
+        except Exception as exc:  # a CUDA build can also fail on memory
+            if not accelerated:
+                raise
+            reason = f"failed with {type(exc).__name__}"
+        if not accelerated:
+            raise RuntimeError(
+                "The face restoration model returned invalid pixels; "
+                "the result was not saved."
+            )
+        on_log(
+            f"Face restoration {reason} on the GPU; "
+            "continuing on the stable CPU path."
+        )
+        self.enhancer_cpu_only = True
+        self.enhancer = None
+        session = self._ensure_enhancer(on_log)
+        prediction = session.run(None, feed)[0][0]
+        if not np.isfinite(prediction).all():
+            raise RuntimeError(
+                "The face restoration model returned invalid pixels; "
+                "the result was not saved."
+            )
+        return prediction
+
+    def _restore_face(self, swapped: np.ndarray, target_face, on_log: LogFn = _noop):
+        """Rebuild eye, lash and tooth detail the 256px swapper cannot resolve."""
+        session = self._ensure_enhancer(on_log)
+        destination = FFHQ_TEMPLATE * ENHANCER_SIZE
+        # A generous threshold keeps all five landmarks as inliers, so this is a
+        # least-squares similarity fit rather than a robust subset fit.
+        matrix, _ = cv2.estimateAffinePartial2D(
+            np.asarray(target_face.kps, dtype=np.float32),
+            destination,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=100,
+        )
+        if matrix is None:
+            return swapped
+        crop = cv2.warpAffine(
+            swapped,
+            matrix,
+            (ENHANCER_SIZE, ENHANCER_SIZE),
+            flags=cv2.INTER_LANCZOS4,
+            borderValue=0.0,
+        )
+        blob = ((crop[:, :, ::-1] / 255.0 - 0.5) / 0.5).transpose(2, 0, 1)
+        prediction = self._run_enhancer(session, blob, on_log)
+        restored = np.clip(prediction, -1.0, 1.0).transpose(1, 2, 0)
+        restored = np.clip((restored + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
+        # Keep a little of the swapped crop so restoration sharpens the face
+        # instead of repainting it.
+        blended = cv2.addWeighted(crop, 1.0 - ENHANCER_BLEND, restored, ENHANCER_BLEND, 0.0)
+        return self._paste_restored(swapped, blended, matrix)
 
     @staticmethod
     def _preserve_inner_mouth(
@@ -500,6 +650,10 @@ class SwapEngine:
                         "for cleaner eyes, lips and teeth."
                     )
                 result = self._hyperswap_face(result, face, source_face, boost_size)
+            if quality == "best":
+                # Restore before the mouth is put back, so the target's own
+                # teeth are the last thing written into the frame.
+                result = self._restore_face(result, face, on_log)
             if preserve_mouth:
                 result = self._preserve_inner_mouth(result, target, face)
         return result, len(selected), len(faces)
@@ -578,9 +732,12 @@ class SwapEngine:
         outputs: list[str] = []
         total = len(target_paths)
         batch_date_tag = datetime.now().strftime("%d%m%Y-%H%M%S")
-        detail = {"careful": "Careful adaptive 512–1024px", "balanced": "Balanced 256px", "fast": "Fast 128px"}.get(
-            quality, quality
-        )
+        detail = {
+            "best": "Best adaptive 512–1024px with face restoration",
+            "careful": "Careful adaptive 512–1024px",
+            "balanced": "Balanced 256px",
+            "fast": "Fast 128px",
+        }.get(quality, quality)
         on_log(
             f"Processing {total} destination photo(s) at {detail}. "
             "Originals stay untouched."

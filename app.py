@@ -567,7 +567,11 @@ class MainWindow(QMainWindow):
         quality_label.setObjectName("fieldLabel")
         self.quality_mode = QComboBox()
         self.quality_mode.addItem(
-            "Careful — adaptive HyperSwap 512–1024 (best detail, slower)", "careful"
+            "Best — Careful plus face restoration (sharpest eyes and teeth, slowest)",
+            "best",
+        )
+        self.quality_mode.addItem(
+            "Careful — adaptive HyperSwap 512–1024 (more detail, slower)", "careful"
         )
         self.quality_mode.addItem("Balanced — HyperSwap 256", "balanced")
         self.quality_mode.addItem("Fast — InSwapper 128 (draft quality)", "fast")

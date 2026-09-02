@@ -127,6 +127,97 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(core.SwapEngine._boost_size_for_face(image, closeup, "careful"), 1024)
         self.assertEqual(core.SwapEngine._boost_size_for_face(image, extreme, "careful"), 1024)
         self.assertEqual(core.SwapEngine._boost_size_for_face(image, closeup, "balanced"), 256)
+        self.assertEqual(core.SwapEngine._boost_size_for_face(image, distant, "best"), 512)
+        self.assertEqual(core.SwapEngine._boost_size_for_face(image, closeup, "best"), 1024)
+
+    def test_best_quality_restores_after_swapping_and_before_the_mouth(self):
+        face = SimpleNamespace(bbox=np.array([0, 0, 20, 20]))
+        engine = core.SwapEngine()
+        engine.analyser = FakeAnalyser([face])
+        order: list[str] = []
+
+        def fake_hyperswap(target, _face, _source, _boost):
+            order.append("swap")
+            return target + 1
+
+        def fake_restore(swapped, _face, _on_log=core._noop):
+            order.append("restore")
+            return swapped + 10
+
+        def fake_mouth(swapped, _original, _face):
+            order.append("mouth")
+            return swapped + 100
+
+        engine._hyperswap_face = fake_hyperswap
+        engine._restore_face = fake_restore
+        engine._preserve_inner_mouth = staticmethod(fake_mouth).__func__
+        result, _, _ = engine.swap_array(
+            np.zeros((64, 64, 3), dtype=np.uint8),
+            source_face=face,
+            quality="best",
+            preserve_mouth=True,
+        )
+        self.assertEqual(order, ["swap", "restore", "mouth"])
+        self.assertTrue(np.all(result == 111))
+
+    def test_careful_quality_never_loads_the_restoration_model(self):
+        face = SimpleNamespace(bbox=np.array([0, 0, 20, 20]))
+        engine = core.SwapEngine()
+        engine.analyser = FakeAnalyser([face])
+        engine._hyperswap_face = lambda target, *_: target + 1
+        engine._restore_face = lambda *_: self.fail("Careful must not restore")
+        engine.swap_array(
+            np.zeros((64, 64, 3), dtype=np.uint8),
+            source_face=face,
+            quality="careful",
+            preserve_mouth=False,
+        )
+        self.assertIsNone(engine.enhancer)
+
+    def test_restoration_retires_a_gpu_that_returns_invalid_pixels(self):
+        class FakeSession:
+            def __init__(self, provider, output):
+                self.provider = provider
+                self.output = output
+
+            def get_providers(self):
+                return [self.provider]
+
+            def run(self, _outputs, _feed):
+                return [self.output]
+
+        engine = core.SwapEngine()
+        engine.accelerated_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        engine.enhancer = FakeSession(
+            "CUDAExecutionProvider", np.full((1, 3, 4, 4), np.nan, dtype=np.float32)
+        )
+        engine._ensure_enhancer = lambda on_log=core._noop: FakeSession(
+            "CPUExecutionProvider", np.zeros((1, 3, 4, 4), dtype=np.float32)
+        )
+        messages: list[str] = []
+        result = engine._run_enhancer(
+            engine.enhancer, np.zeros((3, 4, 4), dtype=np.float32), messages.append
+        )
+
+        self.assertTrue(np.isfinite(result).all())
+        self.assertTrue(engine.enhancer_cpu_only)
+        self.assertTrue(any("CPU" in message for message in messages))
+
+    def test_restoration_failing_on_cpu_is_reported_not_silently_saved(self):
+        class FakeSession:
+            def get_providers(self):
+                return ["CPUExecutionProvider"]
+
+            def run(self, _outputs, _feed):
+                return [np.full((1, 3, 4, 4), np.nan, dtype=np.float32)]
+
+        engine = core.SwapEngine()
+        with self.assertRaises(RuntimeError):
+            engine._run_enhancer(FakeSession(), np.zeros((3, 4, 4), dtype=np.float32))
+
+    def test_restoration_model_is_required_for_setup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertIn(core.ENHANCER_MODEL, core.missing_models(Path(temp)))
 
     def test_swap_largest_face_only(self):
         small = SimpleNamespace(bbox=np.array([0, 0, 10, 10]))
