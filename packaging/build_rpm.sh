@@ -62,6 +62,22 @@ else
     .venv/bin/python -m venv "$build_venv"
   fi
   "$build_venv/bin/pip" install -r "$requirements" pyinstaller
+  if [[ $gpu -eq 1 ]]; then
+    # insightface depends on the CPU onnxruntime wheel, which unpacks into the
+    # same package directory as onnxruntime-gpu. Whichever pip writes last wins,
+    # so a GPU package can silently lose the CUDA provider. Remove the CPU wheel,
+    # restore the GPU one over the shared files, and refuse to build without it.
+    "$build_venv/bin/pip" uninstall -y onnxruntime >/dev/null 2>&1 || true
+    "$build_venv/bin/pip" install --force-reinstall --no-deps \
+      "$(grep -oE 'onnxruntime-gpu==[0-9.]+' "$requirements")"
+    "$build_venv/bin/python" -c '
+import sys
+import onnxruntime
+if "CUDAExecutionProvider" not in onnxruntime.get_available_providers():
+    sys.exit("GPU build lost the CUDA execution provider; refusing to package.")
+print("CUDA execution provider present:", onnxruntime.__version__)
+'
+  fi
   "$build_venv/bin/pyinstaller" --noconfirm --clean packaging/swapio.spec
 fi
 

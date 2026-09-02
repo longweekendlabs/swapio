@@ -14,6 +14,7 @@ if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
         project_root / "models/buffalo_l/w600k_r50.onnx",
         project_root / "models/inswapper_128.onnx",
         project_root / "models/hyperswap_1a_256.onnx",
+        project_root / "models/gpen_bfr_1024.onnx",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
