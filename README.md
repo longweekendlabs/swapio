@@ -54,7 +54,7 @@ Still images only, at version 0.4.3. Video, body reshaping, and character librar
 
 ## Feedback
 
-[Open an issue](https://github.com/longweekendlabs/swapio/issues) for a bug or a request, or email [iemrecnl@gmail.com](mailto:iemrecnl@gmail.com?subject=Swapio%20feedback).
+[Open an issue](https://github.com/longweekendlabs/swapio/issues) for a bug or a request.
 
 ## License
 
