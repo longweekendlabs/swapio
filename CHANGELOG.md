@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.4 - 2026-09-03
+
+- Fix every model download failing certificate verification on Fedora and other non-Debian systems.
+- Verify downloads against the certificate bundle inside the package instead of the build machine's OpenSSL paths.
+
 ## 0.4.3 — 2026-09-02
 
 - Add a **Best** processing quality that restores the swapped face with GPEN-BFR 1024.

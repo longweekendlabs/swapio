@@ -20,7 +20,25 @@ QT_APP = QApplication.instance() or QApplication([])
 
 class ModelSetupTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(VERSION, "0.4.3")
+        self.assertEqual(VERSION, "0.4.4")
+
+    def test_downloads_verify_against_the_bundled_certificates(self):
+        """A frozen build cannot rely on the build machine's OpenSSL paths."""
+        import certifi
+
+        context = setup_models.certificate_context()
+        self.assertTrue(context.get_ca_certs(), "no certificates loaded")
+        with patch.object(setup_models.urllib.request, "urlopen") as urlopen:
+            urlopen.side_effect = RuntimeError("stop before any network use")
+            with tempfile.TemporaryDirectory() as temp:
+                with self.assertRaises(RuntimeError):
+                    setup_models.download("https://example.invalid/m.onnx", Path(temp) / "m")
+        self.assertIn("context", urlopen.call_args.kwargs)
+        self.assertIsInstance(urlopen.call_args.kwargs["context"], setup_models.ssl.SSLContext)
+        self.assertEqual(
+            setup_models.certificate_context().get_ca_certs(),
+            setup_models.ssl.create_default_context(cafile=certifi.where()).get_ca_certs(),
+        )
 
     def test_download_requires_license_acknowledgement(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(

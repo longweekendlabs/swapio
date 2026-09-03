@@ -22,6 +22,9 @@ if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
     datas.append((str(project_root / "models"), "models"))
 binaries = []
 hiddenimports = [
+    # Pulls in certifi's hook so cacert.pem is collected; setup_models verifies
+    # downloads against it rather than the build machine's OpenSSL paths.
+    "certifi",
     "insightface.model_zoo.arcface_onnx",
     "insightface.model_zoo.attribute",
     "insightface.model_zoo.inswapper",

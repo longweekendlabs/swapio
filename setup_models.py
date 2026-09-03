@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import shutil
+import ssl
 import sys
 import tempfile
 import urllib.request
@@ -52,6 +53,24 @@ def _noop_progress(_component: str, _message: str, _done: int, _total: int) -> N
     pass
 
 
+def certificate_context() -> ssl.SSLContext:
+    """Verify TLS against a certificate bundle the package carries itself.
+
+    A frozen build ships the OpenSSL of whichever distribution built it, and the
+    certificate directory compiled into that library often does not exist on the
+    machine running it. An Ubuntu-built package looks in /usr/lib/ssl, which
+    Fedora does not have, so every download fails to verify its certificate.
+    certifi travels inside the package, so trust that and fall back to the system
+    defaults only when it is somehow unavailable.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def download(
     url: str,
     destination: Path,
@@ -61,7 +80,9 @@ def download(
 ) -> None:
     print(f"Downloading {destination.name}...")
     request = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{VERSION}"})
-    with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as output:
+    with urllib.request.urlopen(
+        request, timeout=60, context=certificate_context()
+    ) as response, destination.open("wb") as output:
         total = int(response.headers.get("Content-Length", "0"))
         done = 0
         last_percent = -1
