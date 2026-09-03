@@ -140,7 +140,7 @@ class CoreTests(unittest.TestCase):
             order.append("swap")
             return target + 1
 
-        def fake_restore(swapped, _face, _on_log=core._noop):
+        def fake_restore(swapped, _face, _plain_eyes=True, _on_log=core._noop):
             order.append("restore")
             return swapped + 10
 
@@ -283,47 +283,7 @@ class CoreTests(unittest.TestCase):
         self.assertLess(int(result[23, 20, 0]), 30)
         self.assertEqual(int(result[2, 2, 0]), 200)
 
-    def test_preserve_eyes_restores_only_the_eyeballs(self):
-        original = np.full((64, 96, 3), 20, dtype=np.uint8)
-        swapped = np.full((64, 96, 3), 200, dtype=np.uint8)
-        landmarks = np.zeros((106, 2), dtype=np.float32)
-        for base, cx in ((33, 28), (87, 68)):
-            for step in range(10):
-                angle = step / 10 * 2 * np.pi
-                landmarks[base + step] = (
-                    cx + 11 * np.cos(angle),
-                    32 + 6 * np.sin(angle),
-                )
-        face = SimpleNamespace(landmark_2d_106=landmarks)
-
-        result = core.SwapEngine._preserve_eyes(swapped, original, face)
-
-        self.assertLess(int(result[32, 28]. mean()), 90, "left eyeball not restored")
-        self.assertLess(int(result[32, 68].mean()), 90, "right eyeball not restored")
-        self.assertEqual(int(result[5, 5].mean()), 200, "skin outside the eyes changed")
-        self.assertEqual(int(result[32, 48].mean()), 200, "bridge between eyes changed")
-
-    def test_preserve_eyes_ignores_a_closed_eye(self):
-        original = np.full((64, 96, 3), 20, dtype=np.uint8)
-        swapped = np.full((64, 96, 3), 200, dtype=np.uint8)
-        landmarks = np.zeros((106, 2), dtype=np.float32)
-        for base, cx in ((33, 28), (87, 68)):
-            for step in range(10):
-                # A wide but almost flat contour: the lids are shut.
-                landmarks[base + step] = (cx - 11 + step * 2.4, 32 + (step % 2) * 0.4)
-        face = SimpleNamespace(landmark_2d_106=landmarks)
-
-        result = core.SwapEngine._preserve_eyes(swapped, original, face)
-        np.testing.assert_array_equal(result, swapped)
-
-    def test_preserve_eyes_without_landmarks_is_a_no_op(self):
-        swapped = np.full((16, 16, 3), 200, dtype=np.uint8)
-        face = SimpleNamespace(landmark_2d_106=None)
-        np.testing.assert_array_equal(
-            core.SwapEngine._preserve_eyes(swapped, swapped * 0, face), swapped
-        )
-
-    def test_changing_eye_preservation_reruns_a_completed_photo(self):
+    def test_changing_eye_restoration_reruns_a_completed_photo(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "source.png"
@@ -338,9 +298,16 @@ class CoreTests(unittest.TestCase):
                 preserve_mouth=True,
             )
             self.assertNotEqual(
-                core.processing_key(source, target, preserve_eyes=False, **common),
-                core.processing_key(source, target, preserve_eyes=True, **common),
+                core.processing_key(source, target, plain_eyes=False, **common),
+                core.processing_key(source, target, plain_eyes=True, **common),
             )
+
+    def test_eye_mask_is_none_without_a_landmark_model(self):
+        engine = core.SwapEngine()
+        engine.analyser = SimpleNamespace(models={})
+        self.assertIsNone(
+            engine._eye_mask(np.zeros((32, 32, 3), np.uint8), SimpleNamespace())
+        )
 
     def test_preserve_inner_mouth_ignores_closed_lips(self):
         original = np.zeros((40, 40, 3), dtype=np.uint8)
