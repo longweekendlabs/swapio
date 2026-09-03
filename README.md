@@ -3,7 +3,7 @@
 **Offline batch face swapping for still photos.**
 
 [![Latest release](https://img.shields.io/github/v/release/longweekendlabs/swapio?label=download)](https://github.com/longweekendlabs/swapio/releases/latest)
-[![License](https://img.shields.io/badge/license-All%20rights%20reserved-black)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20arm64-informational)](https://github.com/longweekendlabs/swapio/releases/latest)
 
 Pick one source portrait, point Swapio at a folder of destination photos, and it swaps that face into every one of them. Nothing is uploaded and nothing is sent to a cloud service: after the one-time model download, the app does not use the network at all.
@@ -58,7 +58,7 @@ Still images only, at version 0.4.5. Video, body reshaping, and character librar
 
 ## License
 
-All rights reserved. See [LICENSE](LICENSE). The pretrained models carry their own separate terms, described above.
+MIT, for Swapio's own code. See [LICENSE](LICENSE). The pretrained models and the libraries bundled in the packages carry their own separate terms, described in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md).
 
 © 2026 Long Weekend Labs
 

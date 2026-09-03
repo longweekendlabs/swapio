@@ -106,7 +106,7 @@ Name:           swapio
 Version:        ${version}
 Release:        ${release}%{?dist}
 Summary:        Private offline batch face swapping for still photos
-License:        LicenseRef-Proprietary
+License:        MIT AND LGPL-3.0-only
 URL:            https://github.com/longweekendlabs/swapio
 BuildArch:      ${architecture}
 

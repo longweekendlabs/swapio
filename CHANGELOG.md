@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6 - 2026-09-03
+
+- Relicense Swapio's own source code under MIT.
+- Document the Qt/LGPL, ONNX Runtime, OpenCV, NumPy and Pillow terms that apply to the libraries inside the packages.
+- Declare the package license as MIT AND LGPL-3.0-only instead of proprietary.
+
 ## 0.4.5 - 2026-09-03
 
 - Keep the destination photo's own eyeballs, moved onto the swapped eyelids so they line up.

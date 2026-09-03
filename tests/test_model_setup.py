@@ -20,7 +20,7 @@ QT_APP = QApplication.instance() or QApplication([])
 
 class ModelSetupTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(VERSION, "0.4.5")
+        self.assertEqual(VERSION, "0.4.6")
 
     def test_downloads_verify_against_the_bundled_certificates(self):
         """A frozen build cannot rely on the build machine's OpenSSL paths."""
