@@ -12,11 +12,15 @@ Swapio is free.
 
 ### [Download the latest release](https://github.com/longweekendlabs/swapio/releases/latest)
 
+![Swapio showing a synthetic source portrait beside completed face-swap results](docs/screenshots/hero.png)
+
 ## One face in, a whole folder out
 
 One source portrait per run. Feed it individual photos or a whole folder tree, preview the result before you commit, and choose whether to swap only the largest face in each photo or every face it finds.
 
 Repeat a batch and it processes only new or changed photos by default. A photo that fails is skipped and reported at the end rather than killing the run, so a bad file in the middle of two hundred does not cost you the batch.
+
+![Swapio processing a folder of synthetic portraits with progress and completed outputs visible](docs/screenshots/batch-run.png)
 
 ## Four quality modes, and they mean something
 
