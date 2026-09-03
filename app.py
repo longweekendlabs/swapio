@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSlider,
     QSplitter,
     QToolButton,
     QVBoxLayout,
@@ -606,6 +607,27 @@ class MainWindow(QMainWindow):
         self.plain_eyes.stateChanged.connect(self._save_state)
         grid.addWidget(eyes_label, 4, 0)
         grid.addWidget(self.plain_eyes, 4, 1)
+
+        strength_label = QLabel("Restoration strength")
+        strength_label.setObjectName("fieldLabel")
+        self.restoration_strength = QSlider(Qt.Horizontal)
+        self.restoration_strength.setRange(0, 100)
+        self.restoration_strength.setValue(
+            int(core.DEFAULT_RESTORATION_STRENGTH * 100)
+        )
+        self.restoration_strength.setToolTip(
+            "Best quality only. How much of the restored face replaces the "
+            "swapped one. High values repaint skin and eyes hard enough to look "
+            "painted; 0 leaves the swap exactly as Careful produced it."
+        )
+        self.restoration_value = QLabel()
+        self.restoration_value.setObjectName("fileName")
+        self.restoration_strength.valueChanged.connect(self._restoration_changed)
+        self.restoration_strength.sliderReleased.connect(self._save_state)
+        grid.addWidget(strength_label, 5, 0)
+        grid.addWidget(self.restoration_strength, 5, 1)
+        grid.addWidget(self.restoration_value, 5, 2)
+        self._restoration_changed(self.restoration_strength.value())
         self.skip_completed = QCheckBox("Skip unchanged photos already completed")
         self.skip_completed.setChecked(True)
         self.skip_completed.setToolTip(
@@ -791,6 +813,12 @@ class MainWindow(QMainWindow):
     def _all_faces(self) -> bool:
         return self.face_mode.currentIndex() == 1
 
+    def _restoration_changed(self, value: int) -> None:
+        self.restoration_value.setText(f"{value}%" if value else "off")
+
+    def _restoration_strength(self) -> float:
+        return self.restoration_strength.value() / 100.0
+
     def _quality(self) -> str:
         return self.quality_mode.currentData()
 
@@ -818,6 +846,7 @@ class MainWindow(QMainWindow):
             quality=self._quality(),
             preserve_mouth=self.preserve_mouth.isChecked(),
             plain_eyes=self.plain_eyes.isChecked(),
+            restoration_strength=self._restoration_strength(),
         )
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.preview_ready.connect(self._preview_ready)
@@ -873,6 +902,7 @@ class MainWindow(QMainWindow):
             character_name=self.character_name.text().strip(),
             preserve_mouth=self.preserve_mouth.isChecked(),
             plain_eyes=self.plain_eyes.isChecked(),
+            restoration_strength=self._restoration_strength(),
             skip_completed=self.skip_completed.isChecked(),
         )
         self.worker.log.connect(self.log.appendPlainText)
@@ -989,6 +1019,11 @@ class MainWindow(QMainWindow):
         self.output_format.setCurrentIndex(max(format_index, 0))
         self.preserve_mouth.setChecked(bool(self._state.get("preserve_mouth", True)))
         self.plain_eyes.setChecked(bool(self._state.get("plain_eyes", True)))
+        self.restoration_strength.setValue(
+            int(self._state.get(
+                "restoration_strength", core.DEFAULT_RESTORATION_STRENGTH * 100
+            ))
+        )
         self.skip_completed.setChecked(bool(self._state.get("skip_completed", True)))
 
     def _save_state(self):
@@ -1000,6 +1035,7 @@ class MainWindow(QMainWindow):
         self._state["output_format"] = self._output_format()
         self._state["preserve_mouth"] = self.preserve_mouth.isChecked()
         self._state["plain_eyes"] = self.plain_eyes.isChecked()
+        self._state["restoration_strength"] = self.restoration_strength.value()
         self._state["skip_completed"] = self.skip_completed.isChecked()
         for retired in (
             "hair_mode", "custom_hair_color", "hair_strength",

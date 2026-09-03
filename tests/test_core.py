@@ -140,7 +140,7 @@ class CoreTests(unittest.TestCase):
             order.append("swap")
             return target + 1
 
-        def fake_restore(swapped, _face, _plain_eyes=True, _on_log=core._noop):
+        def fake_restore(swapped, _face, _plain=True, _strength=0.5, _on_log=core._noop):
             order.append("restore")
             return swapped + 10
 
@@ -296,10 +296,31 @@ class CoreTests(unittest.TestCase):
                 output_format="png",
                 character_name="",
                 preserve_mouth=True,
+                restoration_strength=0.5,
             )
             self.assertNotEqual(
                 core.processing_key(source, target, plain_eyes=False, **common),
                 core.processing_key(source, target, plain_eyes=True, **common),
+            )
+
+    def test_changing_restoration_strength_reruns_a_completed_photo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.png"
+            target = root / "target.png"
+            Image.new("RGB", (8, 8)).save(source)
+            Image.new("RGB", (8, 8)).save(target)
+            common = dict(
+                all_faces=False,
+                quality="best",
+                output_format="png",
+                character_name="",
+                preserve_mouth=True,
+                plain_eyes=True,
+            )
+            self.assertNotEqual(
+                core.processing_key(source, target, restoration_strength=0.5, **common),
+                core.processing_key(source, target, restoration_strength=0.2, **common),
             )
 
     def test_eye_mask_is_none_without_a_landmark_model(self):

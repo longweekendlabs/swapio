@@ -29,7 +29,9 @@ LEFT_EYE_106_INDICES = np.arange(33, 43)
 RIGHT_EYE_106_INDICES = np.arange(87, 97)
 # Face restoration works on its own FFHQ alignment, not the swapper's ArcFace one.
 ENHANCER_SIZE = 1024
-ENHANCER_BLEND = 0.8
+# How much of the restored crop replaces the swapped one. 0.8 repaints the face
+# hard enough to read as painted; the user controls this per batch.
+DEFAULT_RESTORATION_STRENGTH = 0.5
 FFHQ_TEMPLATE = np.array(
     [
         [0.37691676, 0.46864664],
@@ -213,6 +215,7 @@ def processing_key(
     character_name: str,
     preserve_mouth: bool,
     plain_eyes: bool,
+    restoration_strength: float,
 ) -> str:
     """Identify an unchanged input and the settings that produced its output."""
     payload = {
@@ -225,6 +228,7 @@ def processing_key(
         "character_name": character_name.strip(),
         "preserve_mouth": preserve_mouth,
         "plain_eyes": plain_eyes,
+        "restoration_strength": round(float(restoration_strength), 3),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -572,9 +576,15 @@ class SwapEngine:
         swapped: np.ndarray,
         target_face,
         plain_eyes: bool = True,
+        strength: float = DEFAULT_RESTORATION_STRENGTH,
         on_log: LogFn = _noop,
     ):
         """Rebuild eye, lash and tooth detail the 256px swapper cannot resolve."""
+        strength = float(np.clip(strength, 0.0, 1.0))
+        if strength <= 0.0:
+            # Skip the model entirely rather than blending none of it, so that
+            # "off" is byte-identical to Careful and costs nothing.
+            return swapped
         session = self._ensure_enhancer(on_log)
         destination = FFHQ_TEMPLATE * ENHANCER_SIZE
         # A generous threshold keeps all five landmarks as inliers, so this is a
@@ -600,7 +610,7 @@ class SwapEngine:
         restored = np.clip((restored + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
         # Keep a little of the swapped crop so restoration sharpens the face
         # instead of repainting it.
-        blended = cv2.addWeighted(crop, 1.0 - ENHANCER_BLEND, restored, ENHANCER_BLEND, 0.0)
+        blended = cv2.addWeighted(crop, 1.0 - strength, restored, strength, 0.0)
         result = self._paste_restored(swapped, blended, matrix)
         if plain_eyes:
             # Restoration repaints the eyeball, and on a real catchlight it
@@ -701,6 +711,7 @@ class SwapEngine:
         quality: str = "careful",
         preserve_mouth: bool = True,
         plain_eyes: bool = True,
+        restoration_strength: float = DEFAULT_RESTORATION_STRENGTH,
         on_log: LogFn = _noop,
     ):
         faces = sorted(self.analyser.get(target), key=_face_area, reverse=True)
@@ -722,7 +733,9 @@ class SwapEngine:
             if quality == "best":
                 # Restore before the mouth is put back, so the target's own
                 # teeth are the last thing written into the frame.
-                result = self._restore_face(result, face, plain_eyes, on_log)
+                result = self._restore_face(
+                    result, face, plain_eyes, restoration_strength, on_log
+                )
             if preserve_mouth:
                 result = self._preserve_inner_mouth(result, target, face)
         return result, len(selected), len(faces)
@@ -735,6 +748,7 @@ class SwapEngine:
         quality: str = "careful",
         preserve_mouth: bool = True,
         plain_eyes: bool = True,
+        restoration_strength: float = DEFAULT_RESTORATION_STRENGTH,
         on_log: LogFn = _noop,
     ) -> dict:
         source = self.source_face(source_path, on_log)
@@ -748,6 +762,7 @@ class SwapEngine:
             quality=quality,
             preserve_mouth=preserve_mouth,
             plain_eyes=plain_eyes,
+            restoration_strength=restoration_strength,
             on_log=on_log,
         )
         return {
@@ -770,6 +785,7 @@ class SwapEngine:
         character_name: str = "",
         preserve_mouth: bool = True,
         plain_eyes: bool = True,
+        restoration_strength: float = DEFAULT_RESTORATION_STRENGTH,
         skip_completed: bool = True,
         on_log: LogFn = _noop,
         on_progress: ProgressFn = _noop,
@@ -789,6 +805,7 @@ class SwapEngine:
                 character_name=character_name,
                 preserve_mouth=preserve_mouth,
                 plain_eyes=plain_eyes,
+                restoration_strength=restoration_strength,
             )
             keyed_targets.append((target_path, key))
         pending = [
@@ -840,6 +857,7 @@ class SwapEngine:
                     quality=quality,
                     preserve_mouth=preserve_mouth,
                     plain_eyes=plain_eyes,
+                    restoration_strength=restoration_strength,
                     on_log=on_log,
                 )
                 suffix = ".png" if output_format == "png" else ".jpg"
