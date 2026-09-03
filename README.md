@@ -28,7 +28,7 @@ HyperSwap is the high-detail engine; InSwapper is there when you want a quick dr
 
 Swapio changes facial identity and leaves everything else alone: the destination pose, expression, body, skin, hair, and image dimensions all stay. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.
 
-Inner mouth and teeth are preserved on the target, which is what keeps open-mouth smiles from turning strange. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
+Inner mouth and teeth are preserved on the target, which is what keeps open-mouth smiles from turning strange. The destination's eyeballs can be kept too, moved onto the swapped eyelids so they line up: a 256 pixel swapper cannot draw a convincing iris, and a real one beats a generated one. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
 
 ## Download
 
@@ -38,7 +38,7 @@ The package carries no face models and no CUDA libraries. On first launch Swapio
 
 ## Formats and naming
 
-Reads `jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`, and `tiff`. Writes lossless PNG by default, with JPEG at quality 98 available.
+Reads `jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`, and `tiff`. Writes JPEG at quality 98 by default, with lossless PNG available.
 
 Give a run a character name and outputs are named `CharacterName_swapped_DDMMYYYY-HHMMSS.ext`, so a batch stays recognizable months later. Without one, Swapio uses the destination filename.
 
@@ -50,7 +50,7 @@ The application code and the pretrained models carry different licences. Insight
 
 ## Scope
 
-Still images only, at version 0.4.3. Video, body reshaping, and character libraries are outside this release. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
+Still images only, at version 0.4.5. Video, body reshaping, and character libraries are outside this release. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
 
 ## Feedback
 

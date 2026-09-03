@@ -789,7 +789,7 @@ class SwapEngine:
         output_dir: Path | str,
         all_faces: bool = False,
         quality: str = "careful",
-        output_format: str = "png",
+        output_format: str = "jpg",
         character_name: str = "",
         preserve_mouth: bool = True,
         destination_eyes: bool = True,

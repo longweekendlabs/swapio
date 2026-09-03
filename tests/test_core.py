@@ -93,7 +93,7 @@ class CoreTests(unittest.TestCase):
 
             self.assertEqual((first["completed"], first["skipped"]), (1, 0))
             self.assertEqual((second["completed"], second["skipped"]), (0, 1))
-            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 1)
+            self.assertEqual(len(list(output.glob("*_swapped_*.jpg"))), 1)
 
             Path(first["outputs"][0]).unlink()
             third = engine.batch(source, [target], output, quality="fast")
@@ -116,7 +116,7 @@ class CoreTests(unittest.TestCase):
 
             self.assertEqual((preserved["completed"], preserved["skipped"]), (1, 0))
             self.assertEqual((fully_swapped["completed"], fully_swapped["skipped"]), (1, 0))
-            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 2)
+            self.assertEqual(len(list(output.glob("*_swapped_*.jpg"))), 2)
 
     def test_careful_quality_adapts_to_closeup_face_size(self):
         distant = SimpleNamespace(bbox=np.array([100, 100, 260, 300]))
