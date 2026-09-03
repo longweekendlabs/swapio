@@ -593,6 +593,18 @@ class MainWindow(QMainWindow):
         self.preserve_mouth.stateChanged.connect(self._save_state)
         grid.addWidget(mouth_label, 3, 0)
         grid.addWidget(self.preserve_mouth, 3, 1)
+        eyes_label = QLabel("Eyeballs")
+        eyes_label.setObjectName("fieldLabel")
+        self.preserve_eyes = QCheckBox("Preserve target eyeballs")
+        self.preserve_eyes.setChecked(False)
+        self.preserve_eyes.setToolTip(
+            "Keeps only the iris, pupil, and white of each eye; eyelids, lashes, "
+            "and the surrounding face remain swapped. Fixes flat or glassy "
+            "eyeballs, at the cost of keeping the destination's eye colour."
+        )
+        self.preserve_eyes.stateChanged.connect(self._save_state)
+        grid.addWidget(eyes_label, 4, 0)
+        grid.addWidget(self.preserve_eyes, 4, 1)
         self.skip_completed = QCheckBox("Skip unchanged photos already completed")
         self.skip_completed.setChecked(True)
         self.skip_completed.setToolTip(
@@ -804,6 +816,7 @@ class MainWindow(QMainWindow):
             all_faces=self._all_faces(),
             quality=self._quality(),
             preserve_mouth=self.preserve_mouth.isChecked(),
+            preserve_eyes=self.preserve_eyes.isChecked(),
         )
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.preview_ready.connect(self._preview_ready)
@@ -858,6 +871,7 @@ class MainWindow(QMainWindow):
             output_format=self._output_format(),
             character_name=self.character_name.text().strip(),
             preserve_mouth=self.preserve_mouth.isChecked(),
+            preserve_eyes=self.preserve_eyes.isChecked(),
             skip_completed=self.skip_completed.isChecked(),
         )
         self.worker.log.connect(self.log.appendPlainText)
@@ -973,6 +987,7 @@ class MainWindow(QMainWindow):
         format_index = self.output_format.findData(output_format)
         self.output_format.setCurrentIndex(max(format_index, 0))
         self.preserve_mouth.setChecked(bool(self._state.get("preserve_mouth", True)))
+        self.preserve_eyes.setChecked(bool(self._state.get("preserve_eyes", False)))
         self.skip_completed.setChecked(bool(self._state.get("skip_completed", True)))
 
     def _save_state(self):
@@ -983,6 +998,7 @@ class MainWindow(QMainWindow):
         self._state["quality"] = self._quality()
         self._state["output_format"] = self._output_format()
         self._state["preserve_mouth"] = self.preserve_mouth.isChecked()
+        self._state["preserve_eyes"] = self.preserve_eyes.isChecked()
         self._state["skip_completed"] = self.skip_completed.isChecked()
         for retired in (
             "hair_mode", "custom_hair_color", "hair_strength",
