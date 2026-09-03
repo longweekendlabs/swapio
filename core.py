@@ -23,9 +23,15 @@ ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
 PROCESSING_REVISION = 7
 INNER_MOUTH_106_INDICES = np.array([65, 66, 62, 70, 69, 57, 60, 54])
+# The 106-point model puts each eyelid contour in its own run; 43-51 and 97-105
+# next to them are the eyebrows and must stay out of it.
+LEFT_EYE_106_INDICES = np.arange(33, 43)
+RIGHT_EYE_106_INDICES = np.arange(87, 97)
 # Face restoration works on its own FFHQ alignment, not the swapper's ArcFace one.
 ENHANCER_SIZE = 1024
-ENHANCER_BLEND = 0.8
+# How much of the restored crop replaces the swapped one. 0.8 repaints the face
+# hard enough to read as painted; the user controls this per batch.
+DEFAULT_RESTORATION_STRENGTH = 0.5
 FFHQ_TEMPLATE = np.array(
     [
         [0.37691676, 0.46864664],
@@ -208,6 +214,8 @@ def processing_key(
     output_format: str,
     character_name: str,
     preserve_mouth: bool,
+    destination_eyes: bool,
+    restoration_strength: float,
 ) -> str:
     """Identify an unchanged input and the settings that produced its output."""
     payload = {
@@ -219,6 +227,8 @@ def processing_key(
         "output_format": output_format,
         "character_name": character_name.strip(),
         "preserve_mouth": preserve_mouth,
+        "destination_eyes": destination_eyes,
+        "restoration_strength": round(float(restoration_strength), 3),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -561,8 +571,19 @@ class SwapEngine:
             )
         return prediction
 
-    def _restore_face(self, swapped: np.ndarray, target_face, on_log: LogFn = _noop):
+    def _restore_face(
+        self,
+        swapped: np.ndarray,
+        target_face,
+        strength: float = DEFAULT_RESTORATION_STRENGTH,
+        on_log: LogFn = _noop,
+    ):
         """Rebuild eye, lash and tooth detail the 256px swapper cannot resolve."""
+        strength = float(np.clip(strength, 0.0, 1.0))
+        if strength <= 0.0:
+            # Skip the model entirely rather than blending none of it, so that
+            # "off" is byte-identical to Careful and costs nothing.
+            return swapped
         session = self._ensure_enhancer(on_log)
         destination = FFHQ_TEMPLATE * ENHANCER_SIZE
         # A generous threshold keeps all five landmarks as inliers, so this is a
@@ -588,8 +609,73 @@ class SwapEngine:
         restored = np.clip((restored + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
         # Keep a little of the swapped crop so restoration sharpens the face
         # instead of repainting it.
-        blended = cv2.addWeighted(crop, 1.0 - ENHANCER_BLEND, restored, ENHANCER_BLEND, 0.0)
+        blended = cv2.addWeighted(crop, 1.0 - strength, restored, strength, 0.0)
         return self._paste_restored(swapped, blended, matrix)
+
+    def _destination_eyes(self, swapped: np.ndarray, target: np.ndarray, target_face):
+        """Put the destination's own eyeballs back, registered to the swapped lids.
+
+        The swapper renders each eye at 256px and the result reads wrong: the
+        highlight glares and the iris loses its colour. The destination's eyes
+        are real photographic pixels, so use them.
+
+        The earlier attempt at this pasted them at the destination's coordinates
+        and made large heads worse, because the swap moves the eyes and that
+        offset grows with head size. Here each eye is warped from where the
+        destination has it onto where the swap actually put it, measured by
+        re-running the landmark model on the swapped pixels, so the eyeball
+        lands inside the lids that are really there.
+        """
+        models = getattr(self.analyser, "models", None) or {}
+        model = models.get("landmark_2d_106")
+        if model is None or getattr(target_face, "landmark_2d_106", None) is None:
+            return swapped
+        try:
+            moved = type(target_face)(dict(target_face))
+            model.get(swapped, moved)
+        except Exception:
+            return swapped
+        after = getattr(moved, "landmark_2d_106", None)
+        if after is None or len(after) < 106:
+            return swapped
+
+        before = np.asarray(target_face.landmark_2d_106, dtype=np.float32)
+        after = np.asarray(after, dtype=np.float32)
+        height, width = swapped.shape[:2]
+        result = swapped
+        for indices in (LEFT_EYE_106_INDICES, RIGHT_EYE_106_INDICES):
+            source_eye, placed_eye = before[indices], after[indices]
+            eye_width = float(np.ptp(placed_eye[:, 0]))
+            eye_height = float(np.ptp(placed_eye[:, 1]))
+            # A closed eye has no eyeball worth carrying over.
+            if eye_width < 6 or eye_height / eye_width < 0.12:
+                continue
+            matrix, _ = cv2.estimateAffinePartial2D(source_eye, placed_eye, method=cv2.LMEDS)
+            if matrix is None:
+                continue
+            registered = cv2.warpAffine(
+                target, matrix, (width, height),
+                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE,
+            )
+            mask = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillConvexPoly(
+                mask, cv2.convexHull(np.rint(placed_eye).astype(np.int32)), 255
+            )
+            # Stay inside the lid line so the swapped lashes and liner survive.
+            inset = max(1, round(eye_width * 0.10))
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (inset * 2 + 1, inset * 2 + 1)
+            )
+            mask = cv2.erode(mask, kernel, iterations=1)
+            soft = (
+                cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(eye_width * 0.05, 1.0))
+                / 255.0
+            )[:, :, None]
+            result = (
+                soft * registered.astype(np.float32)
+                + (1.0 - soft) * result.astype(np.float32)
+            ).clip(0, 255).astype(np.uint8)
+        return result
 
     @staticmethod
     def _preserve_inner_mouth(
@@ -632,6 +718,8 @@ class SwapEngine:
         all_faces: bool = False,
         quality: str = "careful",
         preserve_mouth: bool = True,
+        destination_eyes: bool = True,
+        restoration_strength: float = DEFAULT_RESTORATION_STRENGTH,
         on_log: LogFn = _noop,
     ):
         faces = sorted(self.analyser.get(target), key=_face_area, reverse=True)
@@ -653,7 +741,9 @@ class SwapEngine:
             if quality == "best":
                 # Restore before the mouth is put back, so the target's own
                 # teeth are the last thing written into the frame.
-                result = self._restore_face(result, face, on_log)
+                result = self._restore_face(result, face, restoration_strength, on_log)
+            if destination_eyes:
+                result = self._destination_eyes(result, target, face)
             if preserve_mouth:
                 result = self._preserve_inner_mouth(result, target, face)
         return result, len(selected), len(faces)
@@ -665,6 +755,8 @@ class SwapEngine:
         all_faces: bool = False,
         quality: str = "careful",
         preserve_mouth: bool = True,
+        destination_eyes: bool = True,
+        restoration_strength: float = DEFAULT_RESTORATION_STRENGTH,
         on_log: LogFn = _noop,
     ) -> dict:
         source = self.source_face(source_path, on_log)
@@ -677,6 +769,8 @@ class SwapEngine:
             all_faces=all_faces,
             quality=quality,
             preserve_mouth=preserve_mouth,
+            destination_eyes=destination_eyes,
+            restoration_strength=restoration_strength,
             on_log=on_log,
         )
         return {
@@ -695,9 +789,11 @@ class SwapEngine:
         output_dir: Path | str,
         all_faces: bool = False,
         quality: str = "careful",
-        output_format: str = "png",
+        output_format: str = "jpg",
         character_name: str = "",
         preserve_mouth: bool = True,
+        destination_eyes: bool = True,
+        restoration_strength: float = DEFAULT_RESTORATION_STRENGTH,
         skip_completed: bool = True,
         on_log: LogFn = _noop,
         on_progress: ProgressFn = _noop,
@@ -716,6 +812,8 @@ class SwapEngine:
                 output_format=output_format,
                 character_name=character_name,
                 preserve_mouth=preserve_mouth,
+                destination_eyes=destination_eyes,
+                restoration_strength=restoration_strength,
             )
             keyed_targets.append((target_path, key))
         pending = [
@@ -766,6 +864,8 @@ class SwapEngine:
                     all_faces=all_faces,
                     quality=quality,
                     preserve_mouth=preserve_mouth,
+                    destination_eyes=destination_eyes,
+                    restoration_strength=restoration_strength,
                     on_log=on_log,
                 )
                 suffix = ".png" if output_format == "png" else ".jpg"

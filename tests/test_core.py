@@ -14,6 +14,7 @@ import core
 class FakeAnalyser:
     def __init__(self, faces):
         self.faces = faces
+        self.models = {}
 
     def get(self, _image):
         return self.faces
@@ -92,7 +93,7 @@ class CoreTests(unittest.TestCase):
 
             self.assertEqual((first["completed"], first["skipped"]), (1, 0))
             self.assertEqual((second["completed"], second["skipped"]), (0, 1))
-            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 1)
+            self.assertEqual(len(list(output.glob("*_swapped_*.jpg"))), 1)
 
             Path(first["outputs"][0]).unlink()
             third = engine.batch(source, [target], output, quality="fast")
@@ -115,7 +116,7 @@ class CoreTests(unittest.TestCase):
 
             self.assertEqual((preserved["completed"], preserved["skipped"]), (1, 0))
             self.assertEqual((fully_swapped["completed"], fully_swapped["skipped"]), (1, 0))
-            self.assertEqual(len(list(output.glob("*_swapped_*.png"))), 2)
+            self.assertEqual(len(list(output.glob("*_swapped_*.jpg"))), 2)
 
     def test_careful_quality_adapts_to_closeup_face_size(self):
         distant = SimpleNamespace(bbox=np.array([100, 100, 260, 300]))
@@ -140,7 +141,7 @@ class CoreTests(unittest.TestCase):
             order.append("swap")
             return target + 1
 
-        def fake_restore(swapped, _face, _on_log=core._noop):
+        def fake_restore(swapped, _face, _strength=0.5, _on_log=core._noop):
             order.append("restore")
             return swapped + 10
 
@@ -282,6 +283,54 @@ class CoreTests(unittest.TestCase):
 
         self.assertLess(int(result[23, 20, 0]), 30)
         self.assertEqual(int(result[2, 2, 0]), 200)
+
+    def test_changing_eye_restoration_reruns_a_completed_photo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.png"
+            target = root / "target.png"
+            Image.new("RGB", (8, 8)).save(source)
+            Image.new("RGB", (8, 8)).save(target)
+            common = dict(
+                all_faces=False,
+                quality="best",
+                output_format="png",
+                character_name="",
+                preserve_mouth=True,
+                restoration_strength=0.5,
+            )
+            self.assertNotEqual(
+                core.processing_key(source, target, destination_eyes=False, **common),
+                core.processing_key(source, target, destination_eyes=True, **common),
+            )
+
+    def test_changing_restoration_strength_reruns_a_completed_photo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.png"
+            target = root / "target.png"
+            Image.new("RGB", (8, 8)).save(source)
+            Image.new("RGB", (8, 8)).save(target)
+            common = dict(
+                all_faces=False,
+                quality="best",
+                output_format="png",
+                character_name="",
+                preserve_mouth=True,
+                destination_eyes=True,
+            )
+            self.assertNotEqual(
+                core.processing_key(source, target, restoration_strength=0.5, **common),
+                core.processing_key(source, target, restoration_strength=0.2, **common),
+            )
+
+    def test_destination_eyes_is_a_no_op_without_a_landmark_model(self):
+        engine = core.SwapEngine()
+        engine.analyser = SimpleNamespace(models={})
+        swapped = np.full((32, 32, 3), 7, dtype=np.uint8)
+        np.testing.assert_array_equal(
+            engine._destination_eyes(swapped, swapped * 0, SimpleNamespace()), swapped
+        )
 
     def test_preserve_inner_mouth_ignores_closed_lips(self):
         original = np.zeros((40, 40, 3), dtype=np.uint8)

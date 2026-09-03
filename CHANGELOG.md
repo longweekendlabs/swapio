@@ -1,11 +1,18 @@
 # Changelog
 
+## 0.4.5 - 2026-09-03
+
+- Keep the destination photo's own eyeballs, moved onto the swapped eyelids so they line up.
+- Fix the hard white catchlight and flat iris the 256px swapper draws in place of a real eye.
+- Add a restoration strength control and lower the default, so Best sharpens without repainting the face.
+- Default new installations to JPEG output instead of PNG.
+
 ## 0.4.4 - 2026-09-03
 
 - Fix every model download failing certificate verification on Fedora and other non-Debian systems.
 - Verify downloads against the certificate bundle inside the package instead of the build machine's OpenSSL paths.
 
-## 0.4.3 — 2026-09-02
+## 0.4.3 - 2026-09-02
 
 - Add a **Best** processing quality that restores the swapped face with GPEN-BFR 1024.
 - Recover eyelash, eyelid, iris and tooth detail that the 256px swapper cannot resolve.
@@ -13,7 +20,7 @@
 - Download and verify the face restoration model alongside the existing four.
 - Bump the batch-processing revision so existing photos are regenerated with the sharper resampling.
 
-## 0.4.2 — 2026-08-06
+## 0.4.2 - 2026-08-06
 
 - Detect close-up faces and raise Careful processing from 512px to 768px or 1024px automatically.
 - Preserve more of the target teeth edges and use scale-aware mouth feathering on large faces.
@@ -22,7 +29,7 @@
 - Keep Model Management focused on the detector, identity encoder, and two face swappers.
 - Bump the batch-processing revision so existing photos are regenerated with the close-up fix.
 
-## 0.4.1 — 2026-08-06
+## 0.4.1 - 2026-08-06
 
 - Add Settings and Model Management pages under the hamburger menu.
 - Add a resumable, checksum-verified optional FASHN Human Parser download.
@@ -31,7 +38,7 @@
 - Pause hair recoloring after the evaluated large model failed real-photo quality checks.
 - Keep optional appearance models out of the application package and Git history.
 
-## 0.4.0 — 2026-08-06
+## 0.4.0 - 2026-08-06
 
 - Add offline photo appearance controls to preview and batch processing.
 - Add natural hair-color presets, a native custom color picker, and source-hair matching.
@@ -43,7 +50,7 @@
 - Keep the source, destination, and preview canvases aligned above equal-height footers.
 - Make inner-mouth preservation opt-in by default after real-photo quality evaluation.
 
-## 0.3.1 — 2026-08-06
+## 0.3.1 - 2026-08-06
 
 - Add an enabled-by-default option to preserve the target's inner mouth and teeth.
 - Use the Buffalo 106-point landmark model to isolate the inner-lip contour precisely.
@@ -53,7 +60,7 @@
 - Include the mouth-preservation setting in repeat-batch history so changed settings rerun.
 - Keep the source and preview canvases inside their cards at compact window heights.
 
-## 0.3.0 — 2026-08-06
+## 0.3.0 - 2026-08-06
 
 - Recalculate the safe sibling output folder whenever a destination folder is selected.
 - Keep a persistent `.swapio-history.json` manifest inside each output folder.
@@ -62,7 +69,7 @@
   repeat-batch protection is deliberately disabled.
 - Report newly saved, unchanged, and failed photos as separate batch counts.
 
-## 0.2.0 — 2026-08-05
+## 0.2.0 - 2026-08-05
 
 - Prevent black HyperSwap previews caused by non-finite CUDA model output.
 - Keep CUDA face detection while using the stable CPU path for quality swaps.
@@ -89,6 +96,6 @@
 - Allow each source portrait to have a remembered character name, producing
   `CharacterName_swapped_DDMMYYYY-HHMMSS.ext` instead of camera-origin filenames.
 
-## 0.1.0 — 2026-08-05
+## 0.1.0 - 2026-08-05
 
 - Initial offline still-image preview and batch swapping workflow.
