@@ -596,17 +596,18 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.preserve_mouth, 3, 1)
         eyes_label = QLabel("Eyeballs")
         eyes_label.setObjectName("fieldLabel")
-        self.plain_eyes = QCheckBox("Keep eyeballs out of face restoration")
-        self.plain_eyes.setChecked(True)
-        self.plain_eyes.setToolTip(
-            "Best quality only. Face restoration sharpens a catchlight into a "
-            "hard white glare that looks artificial. This leaves the iris, pupil "
-            "and white of each eye as the swap produced them; eyelids, lashes "
-            "and liner are still restored."
+        self.destination_eyes = QCheckBox("Keep the destination's eyes")
+        self.destination_eyes.setChecked(True)
+        self.destination_eyes.setToolTip(
+            "The swapper redraws each eye at 256 pixels, which is where the hard "
+            "white glare and the flat iris come from. This puts the destination "
+            "photo's real eyeballs back, moved onto the swapped eyelids so they "
+            "line up. Lashes, liner and lids stay swapped; eye colour becomes "
+            "the destination's."
         )
-        self.plain_eyes.stateChanged.connect(self._save_state)
+        self.destination_eyes.stateChanged.connect(self._save_state)
         grid.addWidget(eyes_label, 4, 0)
-        grid.addWidget(self.plain_eyes, 4, 1)
+        grid.addWidget(self.destination_eyes, 4, 1)
 
         strength_label = QLabel("Restoration strength")
         strength_label.setObjectName("fieldLabel")
@@ -845,7 +846,7 @@ class MainWindow(QMainWindow):
             all_faces=self._all_faces(),
             quality=self._quality(),
             preserve_mouth=self.preserve_mouth.isChecked(),
-            plain_eyes=self.plain_eyes.isChecked(),
+            destination_eyes=self.destination_eyes.isChecked(),
             restoration_strength=self._restoration_strength(),
         )
         self.worker.log.connect(self.log.appendPlainText)
@@ -901,7 +902,7 @@ class MainWindow(QMainWindow):
             output_format=self._output_format(),
             character_name=self.character_name.text().strip(),
             preserve_mouth=self.preserve_mouth.isChecked(),
-            plain_eyes=self.plain_eyes.isChecked(),
+            destination_eyes=self.destination_eyes.isChecked(),
             restoration_strength=self._restoration_strength(),
             skip_completed=self.skip_completed.isChecked(),
         )
@@ -1018,7 +1019,7 @@ class MainWindow(QMainWindow):
         format_index = self.output_format.findData(output_format)
         self.output_format.setCurrentIndex(max(format_index, 0))
         self.preserve_mouth.setChecked(bool(self._state.get("preserve_mouth", True)))
-        self.plain_eyes.setChecked(bool(self._state.get("plain_eyes", True)))
+        self.destination_eyes.setChecked(bool(self._state.get("destination_eyes", True)))
         self.restoration_strength.setValue(
             int(self._state.get(
                 "restoration_strength", core.DEFAULT_RESTORATION_STRENGTH * 100
@@ -1034,7 +1035,7 @@ class MainWindow(QMainWindow):
         self._state["quality"] = self._quality()
         self._state["output_format"] = self._output_format()
         self._state["preserve_mouth"] = self.preserve_mouth.isChecked()
-        self._state["plain_eyes"] = self.plain_eyes.isChecked()
+        self._state["destination_eyes"] = self.destination_eyes.isChecked()
         self._state["restoration_strength"] = self.restoration_strength.value()
         self._state["skip_completed"] = self.skip_completed.isChecked()
         for retired in (

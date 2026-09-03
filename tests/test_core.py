@@ -14,6 +14,7 @@ import core
 class FakeAnalyser:
     def __init__(self, faces):
         self.faces = faces
+        self.models = {}
 
     def get(self, _image):
         return self.faces
@@ -140,7 +141,7 @@ class CoreTests(unittest.TestCase):
             order.append("swap")
             return target + 1
 
-        def fake_restore(swapped, _face, _plain=True, _strength=0.5, _on_log=core._noop):
+        def fake_restore(swapped, _face, _strength=0.5, _on_log=core._noop):
             order.append("restore")
             return swapped + 10
 
@@ -299,8 +300,8 @@ class CoreTests(unittest.TestCase):
                 restoration_strength=0.5,
             )
             self.assertNotEqual(
-                core.processing_key(source, target, plain_eyes=False, **common),
-                core.processing_key(source, target, plain_eyes=True, **common),
+                core.processing_key(source, target, destination_eyes=False, **common),
+                core.processing_key(source, target, destination_eyes=True, **common),
             )
 
     def test_changing_restoration_strength_reruns_a_completed_photo(self):
@@ -316,18 +317,19 @@ class CoreTests(unittest.TestCase):
                 output_format="png",
                 character_name="",
                 preserve_mouth=True,
-                plain_eyes=True,
+                destination_eyes=True,
             )
             self.assertNotEqual(
                 core.processing_key(source, target, restoration_strength=0.5, **common),
                 core.processing_key(source, target, restoration_strength=0.2, **common),
             )
 
-    def test_eye_mask_is_none_without_a_landmark_model(self):
+    def test_destination_eyes_is_a_no_op_without_a_landmark_model(self):
         engine = core.SwapEngine()
         engine.analyser = SimpleNamespace(models={})
-        self.assertIsNone(
-            engine._eye_mask(np.zeros((32, 32, 3), np.uint8), SimpleNamespace())
+        swapped = np.full((32, 32, 3), 7, dtype=np.uint8)
+        np.testing.assert_array_equal(
+            engine._destination_eyes(swapped, swapped * 0, SimpleNamespace()), swapped
         )
 
     def test_preserve_inner_mouth_ignores_closed_lips(self):
