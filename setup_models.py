@@ -32,14 +32,23 @@ SWAPPER_URL = "https://huggingface.co/mikestealth/inswapper/resolve/main/inswapp
 SWAPPER_SHA256 = "0fa95f167682b4f61edf24f8d66c46b4ab130e8be058f00c8150e6d0170ca72f"
 HYPERSWAP_URL = (
     "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/"
-    "hyperswap_1a_256.onnx"
+    "hyperswap_1b_256.onnx"
 )
-HYPERSWAP_SHA256 = "c0e98a8a03a238f461ed3d2570e426b49f46745ee400854a60dceeb70c246add"
+HYPERSWAP_SHA256 = "5124031789c42f71b9558fb71954ef7aedb6da7ed9fac79293e23c61a792a73e"
 ENHANCER_URL = (
     "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/"
     "gpen_bfr_1024.onnx"
 )
 ENHANCER_SHA256 = "bcd31aa52110a2005efc96abbab4546d57e42482648f08715b552423d96b381b"
+
+OCCLUDER_URL = (
+    "https://github.com/facefusion/facefusion-assets/releases/download/models-3.1.0/"
+    "xseg_1.onnx"
+)
+OCCLUDER_SHA256 = "c4d1498b8a03b5fe2a3a5d2ef2a0402ab03bd51edaf5b2d8d5fb764702a97dd3"
+FACE_PARSER_URL = "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx"
+FACE_PARSER_SHA256 = "0d9bd318e46987c3bdbfacae9e2c0f461cae1c6ac6ea6d43bbe541a91727e33f"
+FACE_PARSER_FILENAME = "bisenet_resnet_18.onnx"
 
 ProgressFn = Callable[[str, str, int, int], None]
 StopFn = Callable[[], bool]
@@ -205,7 +214,7 @@ def install_hyperswap(
     should_stop: StopFn = lambda: False,
 ) -> None:
     component = "High-quality face swapper"
-    destination = model_root / "hyperswap_1a_256.onnx"
+    destination = model_root / "hyperswap_1b_256.onnx"
     if destination.is_file() and sha256(destination) == HYPERSWAP_SHA256:
         print("High-quality face swapper is already installed and verified.")
         on_progress(component, "Installed and verified", 1, 1)
@@ -257,6 +266,54 @@ def install_enhancer(
         partial.unlink(missing_ok=True)
 
 
+def install_occluder(
+    model_root: Path = MODEL_DIR,
+    on_progress: ProgressFn = _noop_progress,
+    should_stop: StopFn = lambda: False,
+) -> None:
+    component = "Face occlusion protection"
+    destination = model_root / "xseg_1.onnx"
+    if destination.is_file() and sha256(destination) == OCCLUDER_SHA256:
+        on_progress(component, "Installed and verified", 1, 1)
+        return
+    partial = destination.with_suffix(".onnx.part")
+    try:
+        download(OCCLUDER_URL, partial, component, on_progress, should_stop)
+        if should_stop():
+            raise DownloadCancelled("Model download cancelled.")
+        on_progress(component, "Verifying checksum", 0, 0)
+        if sha256(partial) != OCCLUDER_SHA256:
+            raise RuntimeError("Downloaded face protection checksum did not match.")
+        partial.replace(destination)
+        on_progress(component, "Installed and verified", 1, 1)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def install_face_parser(
+    model_root: Path = MODEL_DIR,
+    on_progress: ProgressFn = _noop_progress,
+    should_stop: StopFn = lambda: False,
+) -> None:
+    component = "Mouth expression protection"
+    destination = model_root / FACE_PARSER_FILENAME
+    if destination.is_file() and sha256(destination) == FACE_PARSER_SHA256:
+        on_progress(component, "Installed and verified", 1, 1)
+        return
+    partial = destination.with_suffix(".onnx.part")
+    try:
+        download(FACE_PARSER_URL, partial, component, on_progress, should_stop)
+        if should_stop():
+            raise DownloadCancelled("Model download cancelled.")
+        on_progress(component, "Verifying checksum", 0, 0)
+        if sha256(partial) != FACE_PARSER_SHA256:
+            raise RuntimeError("Downloaded mouth parser checksum did not match.")
+        partial.replace(destination)
+        on_progress(component, "Installed and verified", 1, 1)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 def install_all(
     model_root: Path = MODEL_DIR,
     on_progress: ProgressFn = _noop_progress,
@@ -274,6 +331,12 @@ def install_all(
     if should_stop():
         raise DownloadCancelled("Model download cancelled.")
     install_enhancer(model_root, on_progress, should_stop)
+    if should_stop():
+        raise DownloadCancelled("Model download cancelled.")
+    install_occluder(model_root, on_progress, should_stop)
+    if should_stop():
+        raise DownloadCancelled("Model download cancelled.")
+    install_face_parser(model_root, on_progress, should_stop)
 
 
 def main() -> int:

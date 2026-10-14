@@ -16,23 +16,29 @@ Swapio is free.
 
 ## One face in, a whole folder out
 
-One source portrait per run. Feed it individual photos or a whole folder tree, preview the result before you commit, and choose whether to swap only the largest face in each photo or every face it finds.
+One source portrait per run. Feed it individual photos or a whole folder tree and preview the result before you commit. Swap the largest face, every detected face, or enable "Ask which face to swap when several are detected" to choose a person from numbered thumbnails. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
 
 Repeat a batch and it processes only new or changed photos by default. A photo that fails is skipped and reported at the end rather than killing the run, so a bad file in the middle of two hundred does not cost you the batch.
+
+![Swapio's numbered face picker with the smaller person selected](docs/screenshots/face-selection.png)
 
 ![Swapio processing a folder of synthetic portraits with progress and completed outputs visible](docs/screenshots/batch-run.png)
 
 ## Four quality modes, and they mean something
 
-Best rebuilds the swapped face after the swap, so eyelashes, eyelids, irises and teeth survive at a detail no 256 pixel swapper can reach. Careful works adaptively between 512 and 1024 pixels, detecting close-up faces and raising HyperSwap detail to 768 or 1024 automatically. Balanced runs at 256, and Fast at 128 for drafts.
+Careful is the default. It adjusts sampling to the face size and recovers eye detail only when its checks find lost detail and stable eyelid geometry. Tilted heads are checked in an upright crop. The restoration slider limits how much detail is added.
 
-HyperSwap is the high-detail engine; InSwapper is there when you want a quick draft. On an NVIDIA machine, detection, drafts and face restoration run on CUDA, and restoration falls back to CPU by itself on a card that cannot produce a usable result. HyperSwap quality modes stay on CPU for stability.
+Best adds whole-face restoration, which can also change eyes and lips. Balanced uses fewer samples, and Fast is available for drafts. These modes cannot guarantee an exact likeness or recover every detail in a close-up.
+
+On an NVIDIA machine, detection, drafts and face restoration can use CUDA. Quality swaps run on CPU for stability, and restoration falls back to CPU when necessary.
 
 ## What it preserves
 
 Swapio changes facial identity and leaves everything else alone: the destination pose, expression, body, skin, hair, and image dimensions all stay. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.
 
-Inner mouth and teeth are preserved on the target, which is what keeps open-mouth smiles from turning strange. The destination's eyeballs can be kept too, moved onto the swapped eyelids so they line up: a 256 pixel swapper cannot draw a convincing iris, and a real one beats a generated one. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
+Mouth protection keeps the target's open or obstructed expression together, including lips, teeth and tongue. Closed, unobstructed lips stay generated. Foreground protection helps retain objects and hair crossing the face.
+
+Target-eye preservation is off by default. Enabling it copies the target's eye interiors and eye colour into the swapped face. Leaving it off uses generated eyes, whose colour is not guaranteed to match the source exactly. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
 
 ## Download
 
@@ -54,7 +60,7 @@ The application code and the pretrained models carry different licences. Insight
 
 ## Scope
 
-Still images only, at version 0.4.5. Video, body reshaping, and character libraries are outside this release. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
+Still images only. Video, body reshaping, and character libraries are outside this release. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
 
 ## Feedback
 

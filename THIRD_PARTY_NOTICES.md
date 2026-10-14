@@ -11,8 +11,14 @@ its owner's terms:
 
 - **InsightFace buffalo_l** (detection, landmarks, identity) and **InSwapper**:
   the published pretrained models are stated to be for non-commercial research use.
-- **HyperSwap 1A 256**: published under ResearchRAIL.
+- **HyperSwap 1B 256**: published under ResearchRAIL.
 - **GPEN-BFR 1024** (face restoration): research and non-commercial terms.
+- **BiSeNet ResNet18** (mouth expression parsing): downloaded separately from
+  [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing), under its MIT licence.
+- **XSeg 1** (occlusion protection): DeepFaceLab model, distributed separately
+  through [FaceFusion assets](https://github.com/facefusion/facefusion-assets/releases/tag/models-3.1.0).
+  FaceFusion identifies its licence as GPL-3.0; see the upstream
+  [DeepFaceLab source and licence](https://github.com/iperov/DeepFaceLab).
 
 Review those terms before use. Commercial use may require separate permission
 from the respective model owner.

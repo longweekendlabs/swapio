@@ -22,6 +22,8 @@ COMPONENTS = (
     "Fast face swapper",
     "High-quality face swapper",
     "Face restoration",
+    "Face occlusion protection",
+    "Mouth expression protection",
 )
 
 
@@ -88,7 +90,7 @@ class ModelSetupDialog(QDialog):
 
         explanation = QLabel(
             "Swapio needs approximately 1.5 GB of pretrained models. They are "
-            "downloaded once from their original publishers, verified, and then "
+            "downloaded once from model publishers, verified, and then "
             "used completely offline. Existing verified files are skipped."
         )
         explanation.setObjectName("aboutDescription")
@@ -147,6 +149,8 @@ class ModelSetupDialog(QDialog):
             "Fast face swapper": {core.SWAPPER_MODEL},
             "High-quality face swapper": {core.HYPERSWAP_MODEL},
             "Face restoration": {core.ENHANCER_MODEL},
+            "Face occlusion protection": {core.OCCLUDER_MODEL},
+            "Mouth expression protection": {core.FACE_PARSER_MODEL},
         }
         for component, files in mapping.items():
             ready = not bool(files & missing)

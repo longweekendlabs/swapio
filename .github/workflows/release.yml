@@ -121,8 +121,8 @@ jobs:
         run: |
           version="$(python -c 'from version import VERSION; print(VERSION)')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          awk -v v="## $version" '
-            $0 ~ "^"v { found = 1; next }
+          awk -v v="$version" '
+            index($0, "## ["v"] - ") == 1 || index($0, "## "v" - ") == 1 { found = 1; next }
             found && /^## / { exit }
             found { print }
           ' CHANGELOG.md > release-notes.md
