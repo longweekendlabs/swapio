@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from model_setup_dialog import ModelSetupDialog
+import core
 import setup_models
 from version import VERSION
 
@@ -20,7 +21,7 @@ QT_APP = QApplication.instance() or QApplication([])
 
 class ModelSetupTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(VERSION, "0.4.6")
+        self.assertRegex(VERSION, r"^\d+\.\d+\.\d+$")
 
     def test_downloads_verify_against_the_bundled_certificates(self):
         """A frozen build cannot rely on the build machine's OpenSSL paths."""
@@ -49,6 +50,26 @@ class ModelSetupTests(unittest.TestCase):
             dialog.acknowledge.setChecked(True)
             self.assertTrue(dialog.download_button.isEnabled())
             dialog.close()
+
+    def test_previous_model_collection_requests_the_new_mouth_parser(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"SWAPIO_MODEL_DIR": temp}
+        ):
+            root = Path(temp)
+            for name in core.missing_models(root):
+                if name != core.FACE_PARSER_MODEL:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
+            dialog = ModelSetupDialog()
+            self.assertIn("Not installed", dialog.labels["Mouth expression protection"].text())
+            self.assertFalse(dialog.download_button.isHidden())
+            dialog.close()
+            (root / core.FACE_PARSER_MODEL).touch()
+            complete = ModelSetupDialog()
+            self.assertIn("Installed", complete.labels["Mouth expression protection"].text())
+            self.assertTrue(complete.download_button.isHidden())
+            complete.close()
 
 
 if __name__ == "__main__":

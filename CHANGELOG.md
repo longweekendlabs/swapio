@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.5.0] - 2026-10-14
+
+### Added
+
+- Optional face selection for photos with several people. Choose a numbered face before preview or batch processing, skip a photo, stop the batch, or reset remembered choices.
+- Batch history distinguishes different selected faces in the same photo.
+
+### Changed
+
+- Careful is the default processing mode, with adaptive eye-detail recovery for large faces and tilted heads.
+- Eye-detail restoration checks each eye's geometry and detail before applying it. Restoration strength controls the maximum change.
+- Target-eye preservation is optional and off by default, with a label explaining that it also keeps the target's eye colour.
+- Use the updated quality face model and verify the mouth-protection models during setup.
+
+### Fixed
+
+- Reduce checkerboard texture and misalignment around eyes when combining quality-model samples.
+- Improve blending around open mouths, tongues, lips and foreground objects, including dark seams at mouth corners.
+- Preserve the face blend through head rotation and avoid affecting another person's face.
+- Prevent Fedora RPM conflicts with Speech Bubble Editor and other applications that bundle the same Qt libraries.
+
+### Removed
+
+- Retire source skin-tone matching and its saved settings. It does not change the target's body tone reliably.
+
 ## 0.4.6 - 2026-09-03
 
 - Relicense Swapio's own source code under MIT.

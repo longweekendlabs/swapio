@@ -18,6 +18,31 @@ QT_APP = QApplication.instance() or QApplication([])
 
 
 class AppWorkflowTests(unittest.TestCase):
+    @patch("app.core.missing_models", return_value=[])
+    @patch("app.write_state")
+    @patch("app.read_state", return_value={"skin_tone_match": True, "skin_tone_strength": 100})
+    def test_retired_skin_tone_settings_cannot_reactivate_feature(self, _read, write, _missing):
+        window = app.MainWindow()
+        self.assertFalse(hasattr(window, "skin_tone_match"))
+        self.assertFalse(hasattr(window, "skin_tone_strength"))
+        self.assertEqual(window._quality(), "careful")
+        window._save_state()
+        self.assertNotIn("skin_tone_match", write.call_args.args[0])
+        self.assertNotIn("skin_tone_strength", write.call_args.args[0])
+        window.close()
+
+    @patch("app.core.missing_models", return_value=[])
+    @patch("app.write_state")
+    def test_target_eyes_are_opt_in_and_an_explicit_choice_is_preserved(self, _write, _missing):
+        for state, expected in (({}, False), ({"quality": "retired-mode"}, False),
+                                ({"destination_eyes": True}, True)):
+            with self.subTest(state=state), patch("app.read_state", return_value=state):
+                window = app.MainWindow()
+                self.assertEqual(window.destination_eyes.isChecked(), expected)
+                self.assertEqual(window._quality(), "careful")
+                self.assertEqual(window.quality_mode.itemData(0), "careful")
+                window.close()
+
     @patch("app.read_state", return_value={})
     @patch("app.core.missing_models", return_value=[])
     def test_workflow_canvases_do_not_overlap_card_controls(self, _missing, _state):

@@ -8,14 +8,17 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from threading import Event
 
 import cv2
-from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
+import numpy as np
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, QSize, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QListView,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -301,28 +305,144 @@ class ImageView(QLabel):
             )
 
 
+class FaceSelectionDialog(QDialog):
+    STOP_BATCH = 2
+
+    def __init__(self, target, image, boxes, batch=False, parent=None):
+        super().__init__(parent)
+        self.selected_index = None
+        self.setWindowTitle("Choose the face to swap")
+        self.resize(780, 640)
+        self.setMinimumSize(620, 440)
+        layout = QVBoxLayout(self)
+        heading = QLabel(Path(target).name)
+        heading.setObjectName("aboutName")
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        instruction = QLabel("Select a numbered face below. Only that face will be swapped.")
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
+        height, width = image.shape[:2]
+        scale = min(900 / max(width, height), 1)
+        marked = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))))
+        for index, box in enumerate(boxes):
+            l, t, r, b = np.rint(np.asarray(box) * scale).astype(int)
+            cv2.rectangle(marked, (l, t), (r, b), (92, 122, 255), 2)
+            cv2.putText(marked, str(index + 1), (max(0, l), max(20, t - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, .7, (92, 122, 255), 2, cv2.LINE_AA)
+        overview = ImageView("")
+        overview.setMinimumHeight(180)
+        overview.set_image(marked)
+        layout.addWidget(overview, 1)
+        self.faces = QListWidget()
+        self.faces.setViewMode(QListView.IconMode)
+        self.faces.setResizeMode(QListView.Adjust)
+        self.faces.setIconSize(QSize(104, 104))
+        self.faces.setGridSize(QSize(124, 136))
+        self.faces.setSpacing(5)
+        self.faces.setMinimumHeight(150)
+        self.faces.setMaximumHeight(260)
+        for index, box in enumerate(boxes):
+            l, t, r, b = np.asarray(box)
+            margin = max(r - l, b - t) * .15
+            x0, y0 = max(0, int(l - margin)), max(0, int(t - margin))
+            x1, y1 = min(width, int(r + margin)), min(height, int(b + margin))
+            item = QListWidgetItem(f"Face {index + 1}")
+            if x1 > x0 and y1 > y0:
+                item.setIcon(QIcon(pixmap_from_bgr(image[y0:y1, x0:x1], 200)))
+            self.faces.addItem(item)
+        self.faces.setCurrentRow(-1)
+        layout.addWidget(self.faces)
+        buttons = QHBoxLayout()
+        skip = QPushButton("Skip photo" if batch else "Cancel")
+        skip.clicked.connect(self.reject)
+        buttons.addWidget(skip)
+        if batch:
+            stop = QPushButton("Stop batch")
+            stop.clicked.connect(lambda: self.done(self.STOP_BATCH))
+            buttons.addWidget(stop)
+        buttons.addStretch()
+        self.swap_button = QPushButton("Swap selected face")
+        self.swap_button.setObjectName("primary")
+        self.swap_button.setDefault(True)
+        self.swap_button.setEnabled(False)
+        self.swap_button.clicked.connect(self._accept_face)
+        self.faces.currentRowChanged.connect(lambda row: self.swap_button.setEnabled(row >= 0))
+        self.faces.itemDoubleClicked.connect(lambda _item: self._accept_face())
+        buttons.addWidget(self.swap_button)
+        layout.addLayout(buttons)
+        # QListWidget otherwise selects its first row when it receives the
+        # dialog's initial focus, effectively preselecting the largest face.
+        skip.setFocus(Qt.OtherFocusReason)
+
+    def _accept_face(self):
+        row = self.faces.currentRow()
+        if row >= 0:
+            self.selected_index = row
+            self.accept()
+
+
 class TaskWorker(QThread):
     log = Signal(str)
     progress = Signal(int, int, dict)
     preview_ready = Signal(object)
     batch_ready = Signal(dict)
     failed = Signal(str)
+    cancelled = Signal()
+    face_choice_requested = Signal(object)
 
-    def __init__(self, engine: core.SwapEngine, mode: str, **kwargs):
+    def __init__(self, engine: core.SwapEngine, mode: str, *, ask_face=False,
+                 face_choices=None, **kwargs):
         super().__init__()
         self.engine = engine
         self.mode = mode
         self.kwargs = kwargs
         self._stop = False
+        self.ask_face = ask_face
+        self.face_choices = face_choices if face_choices is not None else {}
+        self._choice_event = Event()
+        self._choice = None
 
     def stop(self):
         self._stop = True
+        self._choice_event.set()
+
+    def submit_face_choice(self, choice):
+        self._choice = choice
+        self._choice_event.set()
+
+    def _select_face(self, target, image, faces):
+        if self._stop:
+            raise core.ProcessingCancelled()
+        key = core.face_selection_key(target, faces)
+        if key in self.face_choices:
+            return self.face_choices[key]
+        self._choice = None
+        self._choice_event.clear()
+        self.face_choice_requested.emit({
+            "target": str(target), "image": image,
+            "boxes": [np.asarray(face.bbox).tolist() for face in faces],
+            "worker": self,
+        })
+        while not self._choice_event.wait(.1):
+            if self._stop:
+                raise core.ProcessingCancelled()
+        if self._stop:
+            raise core.ProcessingCancelled()
+        if self._choice is not None:
+            self.face_choices[key] = self._choice
+        return self._choice
 
     def run(self):
         try:
+            if self.ask_face:
+                self.kwargs["face_selector"] = self._select_face
             if self.mode == "preview":
                 result = self.engine.preview(on_log=self.log.emit, **self.kwargs)
-                self.preview_ready.emit(result)
+                if self._stop:
+                    self.cancelled.emit()
+                else:
+                    self.preview_ready.emit(result)
             else:
                 result = self.engine.batch(
                     on_log=self.log.emit,
@@ -331,6 +451,8 @@ class TaskWorker(QThread):
                     **self.kwargs,
                 )
                 self.batch_ready.emit(result)
+        except (core.FaceSelectionSkipped, core.ProcessingCancelled):
+            self.cancelled.emit()
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -346,6 +468,8 @@ class MainWindow(QMainWindow):
         self.source_path: Path | None = None
         self.targets: list[Path] = []
         self.worker: TaskWorker | None = None
+        self.face_choices: dict[str, int] = {}
+        self._face_dialog = None
         self.last_output: Path | None = None
         self._state = read_state()
         self.engine = core.SwapEngine(use_gpu=bool(self._state.get("prefer_gpu", True)))
@@ -564,15 +688,30 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.face_mode, 1, 1)
         grid.addWidget(self.permission, 1, 2)
 
+        selection_label = QLabel("Face selection")
+        selection_label.setObjectName("fieldLabel")
+        self.ask_face = QCheckBox("Ask which face to swap when several are detected")
+        self.ask_face.setToolTip(
+            "Choose one face per photo using numbered thumbnails. Single-face photos "
+            "continue automatically. Overrides the largest/every-face setting while enabled. "
+            "Choices are remembered during this session."
+        )
+        self.ask_face.toggled.connect(self._face_selection_changed)
+        self.reset_faces_button = QPushButton("Reset face choices")
+        self.reset_faces_button.clicked.connect(self._reset_face_choices)
+        grid.addWidget(selection_label, 2, 0)
+        grid.addWidget(self.ask_face, 2, 1)
+        grid.addWidget(self.reset_faces_button, 2, 2)
+
         quality_label = QLabel("Processing quality")
         quality_label.setObjectName("fieldLabel")
         self.quality_mode = QComboBox()
         self.quality_mode.addItem(
-            "Best — Careful plus face restoration (sharpest eyes and teeth, slowest)",
-            "best",
+            "Careful — adaptive eye detail and mouth protection", "careful"
         )
         self.quality_mode.addItem(
-            "Careful — adaptive HyperSwap 512–1024 (more detail, slower)", "careful"
+            "Best — Careful plus restoration (may alter eyes and lips)",
+            "best",
         )
         self.quality_mode.addItem("Balanced — HyperSwap 256", "balanced")
         self.quality_mode.addItem("Fast — InSwapper 128 (draft quality)", "fast")
@@ -581,33 +720,33 @@ class MainWindow(QMainWindow):
         self.output_format.addItem("JPEG 98 — smaller, re-encodes the image", "jpg")
         self.output_format.addItem("Lossless PNG — unchanged pixels stay exact", "png")
         self.output_format.currentIndexChanged.connect(self._save_state)
-        grid.addWidget(quality_label, 2, 0)
-        grid.addWidget(self.quality_mode, 2, 1)
-        grid.addWidget(self.output_format, 2, 2)
-        mouth_label = QLabel("Open-mouth smiles")
+        grid.addWidget(quality_label, 3, 0)
+        grid.addWidget(self.quality_mode, 3, 1)
+        grid.addWidget(self.output_format, 3, 2)
+        mouth_label = QLabel("Mouth detail")
         mouth_label.setObjectName("fieldLabel")
-        self.preserve_mouth = QCheckBox("Preserve target inner mouth and teeth")
+        self.preserve_mouth = QCheckBox("Protect open/obstructed target mouth")
         self.preserve_mouth.setChecked(True)
         self.preserve_mouth.setToolTip(
-            "Keeps only teeth, tongue, and the inside of an open mouth; lips and the surrounding face remain swapped."
+            "For open mouths, tongues or objects at the lips, keeps the target mouth "
+            "expression together, including lips and teeth. Closed, unobstructed lips "
+            "remain generated by the swap model. Turn off for full model-generated mouth replacement."
         )
         self.preserve_mouth.stateChanged.connect(self._save_state)
-        grid.addWidget(mouth_label, 3, 0)
-        grid.addWidget(self.preserve_mouth, 3, 1)
+        grid.addWidget(mouth_label, 4, 0)
+        grid.addWidget(self.preserve_mouth, 4, 1)
         eyes_label = QLabel("Eyeballs")
         eyes_label.setObjectName("fieldLabel")
-        self.destination_eyes = QCheckBox("Keep the destination's eyes")
-        self.destination_eyes.setChecked(True)
+        self.destination_eyes = QCheckBox("Keep target eyes and target eye colour")
+        self.destination_eyes.setChecked(False)
         self.destination_eyes.setToolTip(
-            "The swapper redraws each eye at 256 pixels, which is where the hard "
-            "white glare and the flat iris come from. This puts the destination "
-            "photo's real eyeballs back, moved onto the swapped eyelids so they "
-            "line up. Lashes, liner and lids stay swapped; eye colour becomes "
-            "the destination's."
+            "Optional: copy the target photo's eye interiors into the swapped face, "
+            "including the target's iris colour. Leave off to keep the model-generated "
+            "eyes. The model does not guarantee an exact source iris-colour match."
         )
         self.destination_eyes.stateChanged.connect(self._save_state)
-        grid.addWidget(eyes_label, 4, 0)
-        grid.addWidget(self.destination_eyes, 4, 1)
+        grid.addWidget(eyes_label, 5, 0)
+        grid.addWidget(self.destination_eyes, 5, 1)
 
         strength_label = QLabel("Restoration strength")
         strength_label.setObjectName("fieldLabel")
@@ -617,17 +756,17 @@ class MainWindow(QMainWindow):
             int(core.DEFAULT_RESTORATION_STRENGTH * 100)
         )
         self.restoration_strength.setToolTip(
-            "Best quality only. How much of the restored face replaces the "
-            "swapped one. High values repaint skin and eyes hard enough to look "
-            "painted; 0 leaves the swap exactly as Careful produced it."
+            "Careful: maximum strength of local eye-detail restoration, used only "
+            "when detail is lost and eye geometry stays stable. Best: whole-face "
+            "restoration strength. Set to 0 to disable restoration."
         )
         self.restoration_value = QLabel()
         self.restoration_value.setObjectName("fileName")
         self.restoration_strength.valueChanged.connect(self._restoration_changed)
         self.restoration_strength.sliderReleased.connect(self._save_state)
-        grid.addWidget(strength_label, 5, 0)
-        grid.addWidget(self.restoration_strength, 5, 1)
-        grid.addWidget(self.restoration_value, 5, 2)
+        grid.addWidget(strength_label, 6, 0)
+        grid.addWidget(self.restoration_strength, 6, 1)
+        grid.addWidget(self.restoration_value, 6, 2)
         self._restoration_changed(self.restoration_strength.value())
         self.skip_completed = QCheckBox("Skip unchanged photos already completed")
         self.skip_completed.setChecked(True)
@@ -635,7 +774,7 @@ class MainWindow(QMainWindow):
             "Swapio records successful outputs in the output folder and only processes new or changed photos."
         )
         self.skip_completed.stateChanged.connect(self._save_state)
-        grid.addWidget(self.skip_completed, 3, 2)
+        grid.addWidget(self.skip_completed, 4, 2)
 
         return box
 
@@ -812,7 +951,45 @@ class MainWindow(QMainWindow):
         self._refresh_controls()
 
     def _all_faces(self) -> bool:
-        return self.face_mode.currentIndex() == 1
+        return not self.ask_face.isChecked() and self.face_mode.currentIndex() == 1
+
+    def _face_selection_changed(self, _checked):
+        self._save_state()
+        self._refresh_controls()
+
+    def _reset_face_choices(self):
+        self.face_choices.clear()
+        self.preview_view.clear_image("Click Preview to choose a face")
+        self.preview_caption.setText("Face choices reset")
+        self._refresh_controls()
+
+    def _face_choice_requested(self, request):
+        worker = request["worker"]
+        if worker is not self.worker or worker._stop:
+            return
+        try:
+            dialog = FaceSelectionDialog(request["target"], request["image"], request["boxes"],
+                                         batch=worker.mode == "batch", parent=self)
+            self._face_dialog = dialog
+            self.status_label.setText("Waiting for face selection…")
+            result = dialog.exec()
+            if result == FaceSelectionDialog.STOP_BATCH:
+                worker.stop()
+            else:
+                worker.submit_face_choice(dialog.selected_index if result == QDialog.Accepted else None)
+            self.status_label.setText("Generating preview…" if worker.mode == "preview" else "Swapping photos…")
+        except Exception as exc:
+            worker.stop()
+            self.log.appendPlainText(f"Face picker stopped: {exc}")
+        finally:
+            self._face_dialog = None
+
+    def _preview_cancelled(self):
+        self._set_running(False)
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.progress.setFormat("Preview cancelled")
+        self.status_label.setText("Preview cancelled")
 
     def _restoration_changed(self, value: int) -> None:
         self.restoration_value.setText(f"{value}%" if value else "off")
@@ -841,6 +1018,8 @@ class MainWindow(QMainWindow):
         self.worker = TaskWorker(
             self.engine,
             "preview",
+            ask_face=self.ask_face.isChecked(),
+            face_choices=self.face_choices,
             source_path=self.source_path,
             target_path=target,
             all_faces=self._all_faces(),
@@ -852,6 +1031,9 @@ class MainWindow(QMainWindow):
         self.worker.log.connect(self.log.appendPlainText)
         self.worker.preview_ready.connect(self._preview_ready)
         self.worker.failed.connect(self._failed)
+        self.worker.cancelled.connect(self._preview_cancelled)
+        self.worker.face_choice_requested.connect(self._face_choice_requested)
+        self.worker.finished.connect(self._refresh_controls)
         self._set_running(True)
         self.status_label.setText("Generating preview…")
         self.worker.start()
@@ -860,8 +1042,11 @@ class MainWindow(QMainWindow):
         self._set_running(False)
         self.preview_view.set_image(result["image"])
         target = Path(result["target"]).name
+        choice = result.get("target_face_index")
+        detail = (f"face {choice + 1} of {result['detected']}" if choice is not None
+                  else f"swapped {result['swapped']} face(s)")
         self.preview_caption.setText(
-            f"{target} — swapped {result['swapped']} face(s) · "
+            f"{target} — {detail} · "
             f"{result['quality'].title()} · {result['provider']}"
         )
         self.progress.setRange(0, 1)
@@ -894,6 +1079,8 @@ class MainWindow(QMainWindow):
         self.worker = TaskWorker(
             self.engine,
             "batch",
+            ask_face=self.ask_face.isChecked(),
+            face_choices=self.face_choices,
             source_path=self.source_path,
             targets=list(self.targets),
             output_dir=output,
@@ -910,6 +1097,8 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self._progress)
         self.worker.batch_ready.connect(self._batch_ready)
         self.worker.failed.connect(self._failed)
+        self.worker.face_choice_requested.connect(self._face_choice_requested)
+        self.worker.finished.connect(self._refresh_controls)
         self._set_running(True)
         self.status_label.setText("Swapping photos…")
         self.worker.start()
@@ -919,7 +1108,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(done)
         self.progress.setFormat(
             f"{done}/{total} — {counts.get('completed', 0)} saved, "
-            f"{counts.get('skipped', 0)} unchanged, {counts.get('failed', 0)} failed"
+            f"{counts.get('skipped', 0)} skipped, {counts.get('failed', 0)} failed"
         )
 
     def _batch_ready(self, result: dict):
@@ -927,11 +1116,11 @@ class MainWindow(QMainWindow):
         self.open_button.setEnabled(bool(result["outputs"]) or result["skipped"] > 0)
         label = "Stopped" if result["stopped"] else "Complete"
         self.status_label.setText(
-            f"{label} — {result['completed']} saved, {result['skipped']} unchanged, "
+            f"{label} — {result['completed']} saved, {result['skipped']} skipped, "
             f"{result['failed']} failed"
         )
         self.progress.setFormat(
-            f"{result['completed']} saved — {result['skipped']} unchanged — "
+            f"{result['completed']} saved — {result['skipped']} skipped — "
             f"{result['failed']} failed — originals untouched"
         )
         self._refresh_model_status()
@@ -940,7 +1129,7 @@ class MainWindow(QMainWindow):
                 self,
                 "Batch complete",
                 f"Saved {result['completed']} swapped photo(s).\n"
-                f"Skipped {result['skipped']} unchanged photo(s).\n"
+                f"Skipped {result['skipped']} photo(s).\n"
                 f"Failed {result['failed']}.\n\n"
                 f"Output: {self.last_output}",
             )
@@ -948,6 +1137,8 @@ class MainWindow(QMainWindow):
     def _stop(self):
         if self.worker:
             self.worker.stop()
+            if self._face_dialog is not None:
+                self._face_dialog.reject()
             self.status_label.setText("Stopping after this photo…")
 
     def _failed(self, message: str):
@@ -973,11 +1164,17 @@ class MainWindow(QMainWindow):
         self.run_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.target_list.setEnabled(not running)
+        self.ask_face.setEnabled(not running)
+        self.reset_faces_button.setEnabled(not running and bool(self.face_choices))
+        self.face_mode.setEnabled(not running and not self.ask_face.isChecked())
         if not running:
             self._refresh_controls()
 
     def _refresh_controls(self):
         running = bool(self.worker and self.worker.isRunning())
+        self.ask_face.setEnabled(not running)
+        self.face_mode.setEnabled(not running and not self.ask_face.isChecked())
+        self.reset_faces_button.setEnabled(not running and self.ask_face.isChecked() and bool(self.face_choices))
         ready = (
             not running
             and self.source_path is not None
@@ -992,7 +1189,7 @@ class MainWindow(QMainWindow):
     def _refresh_model_status(self):
         missing = core.missing_models()
         if missing:
-            self.model_status.setText("↓ Download models · ~1.2 GB")
+            self.model_status.setText("↓ Download models · ~1.5 GB")
             self.model_status.setProperty("state", "warning")
             self.model_status.setToolTip("Missing: " + ", ".join(missing) + "\nClick to set up.")
         elif self.engine.provider != "Not loaded":
@@ -1012,6 +1209,7 @@ class MainWindow(QMainWindow):
         if output_path and output_path.is_dir():
             self.output_edit.setText(str(output_path.resolve()))
         self.face_mode.setCurrentIndex(int(self._state.get("face_mode", 0)))
+        self.ask_face.setChecked(bool(self._state.get("ask_face", False)))
         quality = self._state.get("quality", "careful")
         quality_index = self.quality_mode.findData(quality)
         self.quality_mode.setCurrentIndex(max(quality_index, 0))
@@ -1019,7 +1217,7 @@ class MainWindow(QMainWindow):
         format_index = self.output_format.findData(output_format)
         self.output_format.setCurrentIndex(max(format_index, 0))
         self.preserve_mouth.setChecked(bool(self._state.get("preserve_mouth", True)))
-        self.destination_eyes.setChecked(bool(self._state.get("destination_eyes", True)))
+        self.destination_eyes.setChecked(bool(self._state.get("destination_eyes", False)))
         self.restoration_strength.setValue(
             int(self._state.get(
                 "restoration_strength", core.DEFAULT_RESTORATION_STRENGTH * 100
@@ -1032,6 +1230,7 @@ class MainWindow(QMainWindow):
             return
         self._state["output_dir"] = self.output_edit.text().strip()
         self._state["face_mode"] = self.face_mode.currentIndex()
+        self._state["ask_face"] = self.ask_face.isChecked()
         self._state["quality"] = self._quality()
         self._state["output_format"] = self._output_format()
         self._state["preserve_mouth"] = self.preserve_mouth.isChecked()
@@ -1041,6 +1240,7 @@ class MainWindow(QMainWindow):
         for retired in (
             "hair_mode", "custom_hair_color", "hair_strength",
             "skin_match", "skin_strength", "body_skin",
+            "skin_tone_match", "skin_tone_strength",
         ):
             self._state.pop(retired, None)
         write_state(self._state)
@@ -1058,6 +1258,8 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.worker.stop()
+            if self._face_dialog is not None:
+                self._face_dialog.reject()
             self.worker.wait()
         self._save_state()
         event.accept()

@@ -99,6 +99,9 @@ chmod 755 "$stage/usr/bin/swapio"
 cat > "$top/SPECS/swapio.spec" <<EOF
 %global __os_install_post %{nil}
 %global debug_package %{nil}
+# Bundled Qt/ONNX libraries belong only to /opt/swapio. Global build-ID
+# symlinks collide with other applications bundling the same upstream binaries.
+%global _build_id_links none
 %global _binary_payload w3.zstdio
 AutoReqProv: no
 
@@ -138,6 +141,11 @@ EOF
 rpmbuild --define "_topdir $top" -bb "$top/SPECS/swapio.spec"
 mkdir -p "$output_dir"
 rpm_path="$(find "$top/RPMS" -name '*.rpm' -print -quit)"
+rpm -qpl "$rpm_path" > "$top/package-files.txt"
+if grep -q '^/usr/lib/\.build-id' "$top/package-files.txt"; then
+  echo "RPM contains global build-ID links; refusing to publish a conflicting package." >&2
+  exit 1
+fi
 suffix=""
 if [[ $bundle_models -eq 1 ]]; then
   suffix="-with-models"

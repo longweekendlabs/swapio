@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -30,6 +31,145 @@ class FakeSwapper:
 
 
 class CoreTests(unittest.TestCase):
+    def setUp(self):
+        # These tests isolate the swap/feature pipeline from ONNX inference.
+        from unittest.mock import patch
+        visibility = patch.object(core.SwapEngine, "_visible_face_mask",
+            side_effect=lambda image, _face: np.ones(image.shape[:2], np.float32))
+        visibility.start()
+        self.addCleanup(visibility.stop)
+
+    @staticmethod
+    def feature_face(points, indices=core.INNER_MOUTH_106_INDICES):
+        landmarks = np.zeros((106, 2), dtype=np.float32)
+        landmarks[indices] = points
+        return SimpleNamespace(landmark_2d_106=landmarks)
+
+    def test_mouth_pixels_follow_moved_lips_and_do_not_replace_new_lips(self):
+        points = np.array([[30, 50], [40, 43], [50, 41], [60, 43],
+                           [70, 50], [60, 58], [50, 60], [40, 58]], np.float32)
+        original = np.full((120, 120, 3), 30, np.uint8)
+        cv2.fillConvexPoly(original, points.astype(np.int32), (240, 240, 240))
+        swapped = np.full_like(original, 100)
+        before = self.feature_face(points)
+        after = self.feature_face(points + [0, 16])
+        result = core.SwapEngine._preserve_inner_mouth(swapped, original, before, after)
+        self.assertGreater(int(result[66, 50, 0]), 230)
+        # Old mouth coordinates are now outside the opening, on the new lip.
+        self.assertEqual(int(result[50, 50, 0]), 100)
+        mask = np.zeros(original.shape[:2], np.uint8)
+        cv2.fillConvexPoly(mask, (points + [0, 16]).astype(np.int32), 1)
+        np.testing.assert_array_equal(result[mask == 0], swapped[mask == 0])
+
+    def test_eye_interior_survives_narrow_opening_at_multiple_scales(self):
+        for scale in (1, 3):
+            with self.subTest(scale=scale):
+                # 20%-open eyes used to disappear under width-based erosion.
+                points = np.array([[20, 40], [30, 36], [40, 36], [50, 38],
+                                   [60, 40], [50, 42], [40, 44], [30, 44]], np.float32) * scale
+                face = self.feature_face(points, core.LEFT_EYE_106_INDICES)
+                swapped = np.full((80 * scale, 80 * scale, 3), 100, np.uint8)
+                original = np.full_like(swapped, 240)
+                result = core.SwapEngine()._destination_eyes(swapped, original, face, face)
+                self.assertGreater(int(result[40 * scale, 40 * scale, 0]), 225)
+                self.assertEqual(int(result[34 * scale, 40 * scale, 0]), 100)
+
+    def test_feature_geometry_does_not_treat_tilted_closed_eye_as_open(self):
+        points = np.array([[10, 20], [20, 20], [30, 20], [40, 20]], np.float32)
+        for angle in (0, 35, 75):
+            matrix = cv2.getRotationMatrix2D((25, 20), angle, 1)
+            rotated = cv2.transform(points[None], matrix)[0]
+            width, opening = core.SwapEngine._feature_geometry(rotated)
+            self.assertAlmostEqual(width, 30, places=4)
+            self.assertLess(opening, 0.0001)
+
+    def test_feature_mask_preserves_a_concave_lip_boundary(self):
+        points = np.array([[10, 20], [20, 28], [30, 20], [30, 40], [10, 40]], np.float32)
+        mask = core.SwapEngine._feature_mask((50, 50), points, 20)
+        self.assertEqual(float(mask[23, 20]), 0.0)
+        self.assertGreater(float(mask[34, 20]), 0.9)
+
+    def test_preservation_skips_missing_invalid_or_unrelated_landmarks(self):
+        points = np.array([[30, 50], [40, 43], [50, 41], [60, 43],
+                           [70, 50], [60, 58], [50, 60], [40, 58]], np.float32)
+        original = np.full((120, 120, 3), 240, np.uint8)
+        swapped = np.full_like(original, 100)
+        before = self.feature_face(points)
+        for after in (None, self.feature_face(points + [50, 0]),
+                      self.feature_face(points * np.nan), SimpleNamespace()):
+            result = core.SwapEngine._preserve_inner_mouth(swapped, original, before, after)
+            np.testing.assert_array_equal(result, swapped)
+
+    def test_final_landmarks_are_measured_once_without_mutating_target(self):
+        class Face(dict):
+            # Match InsightFace's missing-attribute semantics, which break
+            # deepcopy(face) through its absent pickle hooks.
+            def __getattr__(self, name):
+                return self.get(name)
+
+        original_points = np.ones((106, 2), np.float32)
+        face = Face(bbox=np.array([0, 0, 30, 30]),
+                    landmark_2d_106=original_points.copy())
+        calls = []
+
+        def measure(image, placed):
+            calls.append(int(image[0, 0, 0]))
+            placed.landmark_2d_106[:] = 9
+
+        engine = core.SwapEngine()
+        engine.analyser = FakeAnalyser([face])
+        engine.analyser.models['landmark_2d_106'] = SimpleNamespace(get=measure)
+        engine._hyperswap_face = lambda target, *_: target + 1
+        engine._restore_face = lambda target, *_: target + 10
+        received = []
+
+        def preserve(image, original, before, after):
+            received.append(after)
+            self.assertIs(before, face)
+            self.assertTrue(np.all(after.landmark_2d_106 == 9))
+            return image
+
+        engine._destination_eyes = preserve
+        engine._preserve_inner_mouth = preserve
+        engine.swap_array(
+            np.zeros((64, 64, 3), np.uint8), face, quality='best', destination_eyes=True
+        )
+        self.assertEqual(calls, [11])
+        self.assertIs(received[0], received[1])
+        np.testing.assert_array_equal(face.landmark_2d_106, original_points)
+
+    def test_default_swap_does_not_copy_target_eyes(self):
+        face = SimpleNamespace(bbox=np.array([0, 0, 30, 30]))
+        engine = core.SwapEngine()
+        engine.analyser = FakeAnalyser([face])
+        engine._hyperswap_face = lambda image, *_: image + 1
+        engine._destination_eyes = lambda *_: self.fail("Target eyes must be opt-in")
+        result, _, _ = engine.swap_array(
+            np.zeros((64, 64, 3), np.uint8), face, preserve_mouth=False
+        )
+        self.assertTrue(np.all(result == 1))
+
+    def test_crop_blend_is_consistent_under_rotation_and_image_clipping(self):
+        crop = np.full((256, 256, 3), 240, np.uint8)
+        target = np.zeros((600, 600, 3), np.uint8)
+        sample_points = np.array([[128, 240], [20, 128], [128, 128]], np.float32)
+        samples = []
+        for angle in (0, 35, 70):
+            inverse = cv2.getRotationMatrix2D((128, 128), angle, 1.3)
+            inverse[:, 2] += 170
+            placed = cv2.transform(sample_points[None], inverse)[0].round().astype(int)
+            result = core.SwapEngine._paste_crop(target, crop, cv2.invertAffineTransform(inverse))
+            samples.append(result[placed[:, 1], placed[:, 0], 0].astype(float))
+            self.assertEqual(int(result[0, 0, 0]), 0)
+        np.testing.assert_allclose(samples, np.broadcast_to(samples[0], (3, 3)), atol=8)
+        # A clipped image must see the same mask as the corresponding region
+        # of a larger canvas, including where the crop crosses the photo edge.
+        inverse = np.array([[1, 0, -35], [0, 1, -20]], np.float32)
+        small = core.SwapEngine._paste_crop(target[:200, :200], crop, cv2.invertAffineTransform(inverse))
+        inverse[:, 2] += 100
+        large = core.SwapEngine._paste_crop(target, crop, cv2.invertAffineTransform(inverse))
+        np.testing.assert_array_equal(small, large[100:300, 100:300])
+
     def test_image_files_filters_and_sorts_recursively(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -145,7 +285,7 @@ class CoreTests(unittest.TestCase):
             order.append("restore")
             return swapped + 10
 
-        def fake_mouth(swapped, _original, _face):
+        def fake_mouth(swapped, _original, _face, _placed_face):
             order.append("mouth")
             return swapped + 100
 
@@ -259,6 +399,28 @@ class CoreTests(unittest.TestCase):
         restored = core.SwapEngine._explode_pixels(list(tiles), 256, 512)
         np.testing.assert_array_equal(restored, image)
 
+    def test_phase_fusion_removes_alternating_prediction_bias(self):
+        frames = [np.full((8, 8, 3), value, np.float32) for value in (20, 80, 80, 20)]
+        interleaved = core.SwapEngine._explode_pixels(frames, 8, 16)
+        self.assertGreater(float(interleaved.std()), 20)
+        fused = core.SwapEngine._fuse_predictions(frames, 8, 16)
+        np.testing.assert_array_equal(fused, np.full((16, 16, 3), 50, np.uint8))
+
+    def test_phase_fusion_registers_sample_coordinates(self):
+        yy, xx = np.mgrid[:32, :32].astype(np.float32)
+        image = np.stack([xx * 3, yy * 3, (xx + yy)], axis=2)
+        frames = list(core.SwapEngine._implode_pixels(image, 8))
+        result = core.SwapEngine._fuse_predictions(frames, 8, 32)
+        np.testing.assert_allclose(result[8:-8, 8:-8], image[8:-8, 8:-8], atol=1)
+
+    def test_phase_fusion_rejects_incomplete_or_nonfinite_predictions(self):
+        frames = [np.ones((8, 8, 3), np.float32) for _ in range(4)]
+        with self.assertRaisesRegex(RuntimeError, 'incomplete'):
+            core.SwapEngine._fuse_predictions(frames[:-1], 8, 16)
+        frames[2][0, 0, 0] = np.nan
+        with self.assertRaisesRegex(RuntimeError, 'invalid sample'):
+            core.SwapEngine._fuse_predictions(frames, 8, 16)
+
     def test_preserve_inner_mouth_restores_only_landmark_polygon(self):
         original = np.full((48, 48, 3), 20, dtype=np.uint8)
         swapped = np.full((48, 48, 3), 200, dtype=np.uint8)
@@ -279,7 +441,7 @@ class CoreTests(unittest.TestCase):
         landmarks[core.INNER_MOUTH_106_INDICES] = mouth
         face = SimpleNamespace(landmark_2d_106=landmarks)
 
-        result = core.SwapEngine._preserve_inner_mouth(swapped, original, face)
+        result = core.SwapEngine._preserve_inner_mouth(swapped, original, face, face)
 
         self.assertLess(int(result[23, 20, 0]), 30)
         self.assertEqual(int(result[2, 2, 0]), 200)
@@ -329,7 +491,7 @@ class CoreTests(unittest.TestCase):
         engine.analyser = SimpleNamespace(models={})
         swapped = np.full((32, 32, 3), 7, dtype=np.uint8)
         np.testing.assert_array_equal(
-            engine._destination_eyes(swapped, swapped * 0, SimpleNamespace()), swapped
+            engine._destination_eyes(swapped, swapped * 0, SimpleNamespace(), None), swapped
         )
 
     def test_preserve_inner_mouth_ignores_closed_lips(self):
@@ -342,7 +504,7 @@ class CoreTests(unittest.TestCase):
         )
         face = SimpleNamespace(landmark_2d_106=landmarks)
 
-        result = core.SwapEngine._preserve_inner_mouth(swapped, original, face)
+        result = core.SwapEngine._preserve_inner_mouth(swapped, original, face, face)
 
         np.testing.assert_array_equal(result, swapped)
 
