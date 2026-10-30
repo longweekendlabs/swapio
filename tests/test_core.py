@@ -301,12 +301,12 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(order, ["swap", "restore", "mouth"])
         self.assertTrue(np.all(result == 111))
 
-    def test_careful_quality_never_loads_the_restoration_model(self):
+    def test_careful_skips_restoration_without_identity_or_eye_detail_reason(self):
         face = SimpleNamespace(bbox=np.array([0, 0, 20, 20]))
         engine = core.SwapEngine()
         engine.analyser = FakeAnalyser([face])
         engine._hyperswap_face = lambda target, *_: target + 1
-        engine._restore_face = lambda *_: self.fail("Careful must not restore")
+        engine._restore_face = lambda *_: self.fail("No identity or eye-detail reason to restore")
         engine.swap_array(
             np.zeros((64, 64, 3), dtype=np.uint8),
             source_face=face,

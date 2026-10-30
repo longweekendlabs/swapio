@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- For smaller faces, Careful and Best compare both local face models against the source portrait, selecting a stronger replacement when the finished result gives a clear likeness gain. Larger faces and similar matches keep the existing detailed result.
+- Careful restores detail in stronger replacements with a bounded strength and checks that restoration retains the likeness gain. The restoration slider still disables or limits this pass.
+- Reprocess unchanged batches after this face-processing change instead of skipping previous outputs.
+
 ## [0.5.0] - 2026-10-14
 
 ### Added

@@ -24,7 +24,14 @@ ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 OCCLUDER_MODEL = "xseg_1.onnx"
 FACE_PARSER_MODEL = "bisenet_resnet_18.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 17
+PROCESSING_REVISION = 18
+# Require a clear gain before trading the detail model for the identity model.
+# Close scores keep the existing rendering rather than oscillating between models.
+MIN_IDENTITY_GAIN = 0.035
+IDENTITY_RESTORATION_LIMIT = 0.35
+# The alternate model is natively 128px. Beyond a 3x face span its identity
+# gain does not justify sacrificing the existing close-up eye detail.
+MAX_IDENTITY_FACE_SPAN = 128 * 3
 INNER_MOUTH_106_INDICES = np.array([65, 66, 62, 70, 69, 57, 60, 54])
 # The 106-point model puts each eyelid contour in its own run; 43-51 and 97-105
 # next to them are the eyebrows and must stay out of it.
@@ -399,9 +406,9 @@ class SwapEngine:
             session is not None and "CUDAExecutionProvider" in session.get_providers()
             for session in accelerated_sessions
         )
-        self.provider = "CUDA detection · CPU quality" if actual_cuda else "CPU"
+        self.provider = "CUDA detection/identity · CPU detail" if actual_cuda else "CPU"
         if actual_cuda:
-            on_log("CUDA accelerates face detection; quality swapping uses the stable CPU path.")
+            on_log("CUDA accelerates detection and identity swaps; the detail model uses CPU.")
         elif want_cuda:
             on_log("CUDA runtime was found but could not start; using CPU safely.")
         on_log(f"Models ready on {self.provider}.")
@@ -860,6 +867,100 @@ class SwapEngine:
         crop = self._fuse_predictions(swapped_tiles, model_size, boost_size)
         return self._paste_crop(target, crop, matrix)
 
+    def _inswapper_face(self, target, target_face, source_face, boost_size):
+        """Sample the identity model on one grid, using our shared face composite."""
+        from insightface.utils import face_align
+
+        model_size = 128
+        matrix = face_align.estimate_norm(target_face.kps, boost_size)
+        crop = cv2.warpAffine(
+            target, matrix, (boost_size, boost_size),
+            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE,
+        )
+        latent = source_face.normed_embedding.reshape(1, -1) @ self.swapper.emap
+        latent /= np.linalg.norm(latent)
+        frames = []
+        for tile in self._implode_pixels(crop, model_size):
+            blob = cv2.dnn.blobFromImage(tile, 1.0 / 255.0, (model_size, model_size), swapRB=True)
+            prediction = self.swapper.session.run(
+                self.swapper.output_names,
+                {self.swapper.input_names[0]: blob, self.swapper.input_names[1]: latent},
+            )[0][0]
+            if not np.isfinite(prediction).all() or np.max(np.abs(prediction)) > 100:
+                raise RuntimeError("The identity model returned invalid pixels; result was not saved.")
+            frames.append(np.clip(prediction.transpose(1, 2, 0)[:, :, ::-1] * 255, 0, 255))
+        crop = self._fuse_predictions(frames, model_size, boost_size)
+        return self._paste_crop(target, crop, matrix)
+
+    def _source_similarity(self, image, target_face, source_face):
+        """Compare candidates in the same target alignment without another detection."""
+        model = (getattr(self.analyser, "models", None) or {}).get("recognition")
+        if model is None:
+            return None
+        try:
+            reference = np.asarray(source_face.normed_embedding, np.float32).reshape(-1)
+            placed = (type(target_face)(deepcopy(dict(target_face)))
+                      if isinstance(target_face, dict) else deepcopy(target_face))
+            model.get(image, placed)
+            embedding = np.asarray(placed.normed_embedding, np.float32).reshape(-1)
+            if (reference.size < 2 or embedding.shape != reference.shape
+                    or not np.isfinite(reference).all() or not np.isfinite(embedding).all()):
+                return None
+            norm = float(np.linalg.norm(reference) * np.linalg.norm(embedding))
+            if norm <= 1e-8:
+                return None
+            return float(np.clip(np.dot(reference, embedding) / norm, -1, 1))
+        except Exception:
+            # This optional comparison must never replace a valid rendering
+            # using a missing, stale or unmeasurable identity vector.
+            return None
+
+    def _identity_checked_face(self, target, target_face, source_face, boost_size,
+                               quality, restoration_strength, on_log, finish=None):
+        finalize = finish if finish is not None else lambda image, _identity: image
+        primary = self._hyperswap_face(target, target_face, source_face, boost_size)
+        if quality not in BOOSTED_QUALITIES:
+            return finalize(primary, False), False
+        box = np.asarray(target_face.bbox, np.float32)
+        if float(np.max(box[2:] - box[:2])) > MAX_IDENTITY_FACE_SPAN:
+            on_log("Large face: kept the detail model to preserve close-up detail.")
+            return finalize(primary, False), False
+        primary_score = self._source_similarity(primary, target_face, source_face)
+        if primary_score is None:
+            on_log("Source-face comparison unavailable; kept the detail model result.")
+            return finalize(primary, False), False
+        # More sampling phases cannot repair weak identity conditioning. Compare
+        # the independent identity model instead; both use the same target pose.
+        alternate_size = 256 if boost_size <= 512 else 512
+        alternate = self._inswapper_face(target, target_face, source_face, alternate_size)
+        alternate_score = self._source_similarity(alternate, target_face, source_face)
+        if alternate_score is None or alternate_score < primary_score + MIN_IDENTITY_GAIN:
+            on_log("Compared source likeness; kept the detail model result.")
+            return finalize(primary, False), False
+        if quality == "careful" and restoration_strength > 0:
+            restored = self._restore_face(
+                alternate, target_face,
+                min(restoration_strength, IDENTITY_RESTORATION_LIMIT), on_log,
+            )
+            restored_score = self._source_similarity(restored, target_face, source_face)
+            if restored_score is not None and restored_score >= primary_score + MIN_IDENTITY_GAIN:
+                alternate = restored
+            else:
+                on_log("Detail restoration reduced source likeness; kept the un-restored face.")
+        if finish is not None:
+            # Masks/restoration can erase a raw model's apparent advantage.
+            # Compare the actual finished faces before choosing what to save.
+            primary = finalize(primary, False)
+            alternate = finalize(alternate, True)
+            primary_score = self._source_similarity(primary, target_face, source_face)
+            alternate_score = self._source_similarity(alternate, target_face, source_face)
+            if (primary_score is None or alternate_score is None
+                    or alternate_score < primary_score + MIN_IDENTITY_GAIN):
+                on_log("Compared finished source likeness; kept the detail model result.")
+                return primary, False
+        on_log("Compared source likeness; selected the stronger face replacement.")
+        return alternate, True
+
     @staticmethod
     def _boost_size_for_face(target: np.ndarray, face, quality: str) -> int:
         """Use more model samples when a face occupies a large part of the photo."""
@@ -1123,8 +1224,30 @@ class SwapEngine:
             previous = result.copy()
             visibility = self._visible_face_mask(target, face)
             mouth_protection = self._mouth_expression_mask(target, face, visibility) if preserve_mouth else None
+
+            def finish(rendered, identity_selected):
+                if quality == "best":
+                    rendered = self._restore_face(rendered, face, restoration_strength, on_log)
+                elif quality == "careful" and not identity_selected:
+                    rendered = self._adaptive_eye_detail(rendered, target, face, restoration_strength, on_log)
+                if destination_eyes or (preserve_mouth and mouth_protection is None):
+                    placed_face = self._landmarks_after_swap(rendered, face)
+                    if placed_face is None:
+                        on_log("Feature preservation skipped: final landmarks unavailable.")
+                    if destination_eyes:
+                        rendered = self._destination_eyes(rendered, target, face, placed_face)
+                    if preserve_mouth and mouth_protection is None:
+                        rendered = self._preserve_inner_mouth(rendered, target, face, placed_face)
+                if mouth_protection is not None:
+                    placed_face = self._landmarks_after_swap(rendered, face)
+                    protection = self._complete_mouth_protection(mouth_protection, face, placed_face)
+                    rendered = self._apply_visibility(rendered, target, 1.0 - protection)
+                    on_log("Protected the target's open/obstructed mouth expression, including lips and tongue.")
+                # Foreground goes last, preserving prior swapped faces too.
+                return self._apply_visibility(rendered, previous, visibility)
+
             if quality == "fast":
-                result = self.swapper.get(result, face, source_face, paste_back=True)
+                result = finish(self.swapper.get(result, face, source_face, paste_back=True), False)
             else:
                 boost_size = self._boost_size_for_face(target, face, quality)
                 if boost_size > 512:
@@ -1132,29 +1255,10 @@ class SwapEngine:
                         f"Close-up face: combining {(boost_size // 256) ** 2} model samples "
                         "on one grid. The swap model's native resolution is 256px."
                     )
-                result = self._hyperswap_face(result, face, source_face, boost_size)
-            if quality == "best":
-                # Restore before the mouth is put back, so the target's own
-                # teeth are the last thing written into the frame.
-                result = self._restore_face(result, face, restoration_strength, on_log)
-            elif quality == "careful":
-                result = self._adaptive_eye_detail(result, target, face, restoration_strength, on_log)
-            if destination_eyes or (preserve_mouth and mouth_protection is None):
-                placed_face = self._landmarks_after_swap(result, face)
-                if placed_face is None:
-                    on_log("Feature preservation skipped: final landmarks unavailable.")
-                if destination_eyes:
-                    result = self._destination_eyes(result, target, face, placed_face)
-                if preserve_mouth and mouth_protection is None:
-                    result = self._preserve_inner_mouth(result, target, face, placed_face)
-            if mouth_protection is not None:
-                placed_face = self._landmarks_after_swap(result, face)
-                mouth_protection = self._complete_mouth_protection(mouth_protection, face, placed_face)
-                result = self._apply_visibility(result, target, 1.0 - mouth_protection)
-                on_log("Protected the target's open/obstructed mouth expression, including lips and tongue.")
-            # Protect foreground after restoration and mouth registration,
-            # preserving prior swapped faces too.
-            result = self._apply_visibility(result, previous, visibility)
+                result, _ = self._identity_checked_face(
+                    result, face, source_face, boost_size, quality,
+                    restoration_strength, on_log, finish=finish,
+                )
         return result, len(selected), len(faces)
 
     def _target_face_choice(self, target, target_path, face_selector):
@@ -1260,8 +1364,8 @@ class SwapEngine:
         cancelled = False
         batch_date_tag = datetime.now().strftime("%d%m%Y-%H%M%S")
         detail = {
-            "best": "Best clean sampling with face restoration",
-            "careful": "Careful clean sampling",
+            "best": "Best source-likeness comparison with face restoration",
+            "careful": "Careful source-likeness comparison and detail recovery",
             "balanced": "Balanced 256px",
             "fast": "Fast 128px",
         }.get(quality, quality)

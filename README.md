@@ -26,15 +26,17 @@ Repeat a batch and it processes only new or changed photos by default. A photo t
 
 ## Four quality modes, and they mean something
 
-Careful is the default. It adjusts sampling to the face size and recovers eye detail only when its checks find lost detail and stable eyelid geometry. Tilted heads are checked in an upright crop. The restoration slider limits how much detail is added.
+Careful is the default. For smaller faces, it compares two replacements against your source portrait and chooses the closer match when the difference is clear. When their likeness is similar, it keeps the more detailed rendering. Larger faces keep the detail model to protect close-up eye detail. Sampling adjusts to the face size.
+
+Stronger replacements receive limited detail restoration, checked again against the source to avoid repainting the identity. The detailed rendering retains local eye recovery with stable eyelid geometry; tilted heads are checked in an upright crop. The restoration slider limits both kinds of recovery, and setting it to zero disables them.
 
 Best adds whole-face restoration, which can also change eyes and lips. Balanced uses fewer samples, and Fast is available for drafts. These modes cannot guarantee an exact likeness or recover every detail in a close-up.
 
-On an NVIDIA machine, detection, drafts and face restoration can use CUDA. Quality swaps run on CPU for stability, and restoration falls back to CPU when necessary.
+On an NVIDIA machine, detection, alternate face replacements, drafts and face restoration can use CUDA. The detail model runs on CPU for stability, and restoration falls back to CPU when necessary.
 
 ## What it preserves
 
-Swapio changes facial identity and leaves everything else alone: the destination pose, expression, body, skin, hair, and image dimensions all stay. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.
+Swapio replaces facial features within the destination photo. The body, hair, background and image dimensions stay. The models aim to retain pose and expression, but can change eyebrows, eyelids and lips. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.
 
 Mouth protection keeps the target's open or obstructed expression together, including lips, teeth and tongue. Closed, unobstructed lips stay generated. Foreground protection helps retain objects and hair crossing the face.
 

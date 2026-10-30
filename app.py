@@ -707,7 +707,7 @@ class MainWindow(QMainWindow):
         quality_label.setObjectName("fieldLabel")
         self.quality_mode = QComboBox()
         self.quality_mode.addItem(
-            "Careful — adaptive eye detail and mouth protection", "careful"
+            "Careful: compare source likeness and recover detail", "careful"
         )
         self.quality_mode.addItem(
             "Best — Careful plus restoration (may alter eyes and lips)",
@@ -715,6 +715,13 @@ class MainWindow(QMainWindow):
         )
         self.quality_mode.addItem("Balanced — HyperSwap 256", "balanced")
         self.quality_mode.addItem("Fast — InSwapper 128 (draft quality)", "fast")
+        self.quality_mode.setToolTip(
+            "For smaller faces, Careful and Best compare two replacements against the "
+            "source and use the closer match when the difference is clear. Larger faces "
+            "keep the detailed rendering. Careful limits restoration "
+            "to protect likeness; Best applies your whole-face restoration strength. "
+            "Pose and expression can still change with either model."
+        )
         self.quality_mode.currentIndexChanged.connect(self._save_state)
         self.output_format = QComboBox()
         self.output_format.addItem("JPEG 98 — smaller, re-encodes the image", "jpg")
@@ -756,9 +763,10 @@ class MainWindow(QMainWindow):
             int(core.DEFAULT_RESTORATION_STRENGTH * 100)
         )
         self.restoration_strength.setToolTip(
-            "Careful: maximum strength of local eye-detail restoration, used only "
-            "when detail is lost and eye geometry stays stable. Best: whole-face "
-            "restoration strength. Set to 0 to disable restoration."
+            "Careful: limits eye-detail recovery and detail restoration on stronger "
+            "face replacements. Whole-face restoration is capped at 35% and checked "
+            "against source likeness. Best: whole-face restoration strength. "
+            "Set to 0 to disable restoration."
         )
         self.restoration_value = QLabel()
         self.restoration_value.setObjectName("fileName")

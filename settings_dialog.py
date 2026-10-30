@@ -68,7 +68,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(gpu)
         note = QLabel(
             "Changing this preference takes effect after restarting Swapio. "
-            "Careful mode automatically uses 768px or 1024px processing for close-up faces."
+            "For smaller faces, Careful and Best compare source likeness across two models. "
+            "Careful limits restoration and automatically adjusts sampling for close-up faces."
         )
         note.setWordWrap(True)
         note.setObjectName("aboutFinePrint")
