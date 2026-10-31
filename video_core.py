@@ -23,6 +23,7 @@ import core
 from media_tools import native_process_environment
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+PREVIEW_SECONDS = 2.
 
 
 def tools() -> tuple[str, str]:
@@ -310,7 +311,7 @@ def render_video(engine, source_path, path, output_dir, selection, *, start=0., 
     info, _ = probe(path)
     start, end = clip_range(info, start, end)
     if preview:
-        end = min(end, start+3.)
+        end = min(end, start+PREVIEW_SECONDS)
     if not selection.valid(path, start):
         raise RuntimeError("This video or its start changed. Choose its person again.")
     ffmpeg, _ = tools()

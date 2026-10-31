@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20arm64-informational)](https://github.com/longweekendlabs/swapio/releases/latest)
 
-Pick one source portrait, point Swapio at a folder of destination photos, and it swaps that face into every one of them. Nothing is uploaded and nothing is sent to a cloud service: after the one-time model download, the app does not use the network at all.
+Pick one source portrait, add destination photos and short videos, and swap that face through the queue. Nothing is uploaded and nothing is sent to a cloud service: after the one-time model download, the app does not use the network at all.
 
 Swapio is free.
 
@@ -16,7 +16,7 @@ Swapio is free.
 
 ## One face in, a whole folder out
 
-One source portrait per run. Feed it individual photos or a whole folder tree and preview the result before you commit. Swap the largest face, every detected face, or enable "Ask which face to swap when several are detected" to choose a person from numbered thumbnails. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
+One source portrait per run. Use Add media for individual files or add a whole folder tree, then preview before rendering. Photos and videos share one three-step workflow: source, destination media, output and quality. Swap the largest face, every detected face, or enable "Ask which face to swap when several are detected" to choose a person from numbered thumbnails. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
 
 Repeat a batch and it processes only new or changed photos by default. A failed photo does not stop the rest of the run. The final warning separates saved, skipped and failed photos and includes the actual errors; failed photos have no new output. Successful saves show their full paths in the log.
 
@@ -34,7 +34,7 @@ Best adds whole-face restoration, which can also change eyes and lips. Balanced 
 
 On an NVIDIA machine, detection, both face models and face restoration can use CUDA. Conservative workspace settings leave room for the models to run together. If identity swapping runs out of GPU memory, Swapio retries the same selected face on CPU and keeps that recovered session for later photos. Detail swapping and restoration also have checked CPU fallbacks. The log reports these changes.
 
-After each preview or batch, Swapio unloads its processing models to free memory for other apps. Your preview stays available. The next job reloads the models automatically, adding a short startup delay.
+After each preview or batch, Swapio unloads its processing models to free memory for other apps. Your preview stays available. The next job reloads the models automatically, adding a short startup delay. The device indicator shows CUDA enabled or CPU while idle, the actual device during processing, and CPU fallback when needed.
 
 ## What it preserves
 
@@ -46,11 +46,13 @@ Target-eye preservation is off by default. Enabling it keeps the target's eye in
 
 ## Preview a short video before rendering it
 
-The experimental Video tab uses Careful processing with the same source portrait, eye, mouth and restoration controls. Add clips or a folder, set each clip's start and end, and choose the person to follow. Generate a three-second preview and play it in your usual video player before rendering the queue.
+Tick Include videos to process clips in the same queue as photos. When included clips are present, quality switches to Careful and stays locked; unticking restores your photo quality choice. The same source portrait, eye, mouth and restoration controls apply.
+
+Select a clip to adjust its start and end directly below the queue. Import warns about clips over one minute, with a stronger warning above three minutes. Preview selected media confirms that video processing takes time, then generates up to two seconds for playback in your usual video player. Choose the person to follow when prompted; multiple-person clips always require an explicit choice.
 
 Tracking checks the selected person's original face identity on every frame. Uncertain matches stay unchanged and are counted in the result. The face model and sampling choice stay fixed within each continuous scene to reduce flicker; blinking, speech, occlusion and cuts still need visual review.
 
-Exports MP4 with the original audio content and displayed orientation. Variable-frame-rate inputs are converted to their average frame rate. Videos run sequentially, models unload after the job, and cancelled or failed renders remove temporary movies. Only verified outputs count as saved.
+Exports MP4 with the original audio content and displayed orientation. Variable-frame-rate inputs are converted to their average frame rate. Media runs sequentially, photo and video model sets unload before switching between them and after the job, and cancelled or failed renders remove temporary movies. Only verified outputs count as saved.
 
 Video requires the computer's FFmpeg and ffprobe, with H.264 encoding available. Swapio reports missing tools and does not download another media runtime. HDR inputs need an SDR copy for this first video version. This feature is available for local testing and has not been released in the downloadable packages yet.
 
@@ -64,7 +66,7 @@ Installed models live in your user data folder. The installed app runs independe
 
 ## Formats and naming
 
-Reads `jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`, and `tiff`. Writes JPEG at quality 98 by default, with lossless PNG available.
+Reads photos in `jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`, and `tiff`, and videos in `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`. Photo output defaults to JPEG at quality 98, with lossless PNG available; video output is MP4.
 
 Give a run a character name and outputs are named `CharacterName_swapped_DDMMYYYY-HHMMSS.ext`, so a batch stays recognizable months later. Without one, Swapio uses the destination filename.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Swapio - private, offline batch face swapping for still photos."""
+"""Swapio - local face swapping for photos and short videos."""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,7 @@ from threading import Event
 import cv2
 import numpy as np
 import core
+import video_core as video
 from media_tools import native_process_environment
 
 # Load the inference library before Qt installs its Python import feature hook.
@@ -25,7 +26,7 @@ except ImportError:
     pass
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, QSize, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QImage, QPixmap
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QImage, QPixmap, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -49,8 +50,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSplitter,
-    QTabWidget,
-    QScrollArea,
+    QDoubleSpinBox,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -59,7 +60,7 @@ from PySide6.QtWidgets import (
 from about_dialog import AboutDialog
 from model_setup_dialog import ModelSetupDialog
 from settings_dialog import SettingsDialog
-from version import APP_NAME, GITHUB_URL, VERSION
+from version import APP_NAME, GITHUB_URL, VERSION, TAGLINE
 
 PROJECT_DIR = core.base_dir()
 ICON_PATH = PROJECT_DIR / "assets" / "swapio.svg"
@@ -169,6 +170,11 @@ def native_video_files(parent, title: str, start: str, multiple: bool = True) ->
     from video_core import VIDEO_EXTENSIONS
     patterns = " ".join("*"+ext for ext in sorted(VIDEO_EXTENSIONS))
     return native_image_files(parent, title, start, multiple, patterns+"|Videos")
+
+
+def native_media_files(parent, title: str, start: str, multiple: bool = True) -> list[str]:
+    patterns = ' '.join('*'+ext for ext in sorted(core.IMAGE_EXTS | video.VIDEO_EXTENSIONS))
+    return native_image_files(parent,title,start,multiple,patterns+'|Photos and videos')
 
 
 def native_directory(parent, title: str, start: str) -> str:
@@ -365,7 +371,7 @@ class FaceSelectionDialog(QDialog):
         self.faces.setCurrentRow(-1)
         layout.addWidget(self.faces)
         buttons = QHBoxLayout()
-        skip = QPushButton("Skip photo" if batch else "Cancel")
+        skip = QPushButton("Skip media" if batch else "Cancel")
         skip.clicked.connect(self.reject)
         buttons.addWidget(skip)
         if batch:
@@ -466,6 +472,7 @@ class TaskWorker(QThread):
         except Exception as exc:
             outcome, payload = self.failed, (f"{type(exc).__name__}: {exc}",)
         finally:
+            self.last_provider = getattr(self.engine, 'provider', 'Not loaded')
             try:
                 if self.engine.release_models():
                     self.log.emit("Processing models unloaded; memory released for other apps.")
@@ -476,13 +483,138 @@ class TaskWorker(QThread):
         outcome.emit(*payload)
 
 
+class DurationWorker(QThread):
+    ready = Signal(dict)
+
+    def __init__(self, paths):
+        super().__init__()
+        self.paths = list(paths)
+
+    def run(self):
+        results = {}
+        for path in self.paths:
+            if self.isInterruptionRequested():
+                return
+            try:
+                results[str(path)] = video.probe(path, should_stop=self.isInterruptionRequested)[0]
+            except core.ProcessingCancelled:
+                return
+            except Exception as exc:
+                results[str(path)] = str(exc)
+        self.ready.emit(results)
+
+
+class MediaWorker(TaskWorker):
+    """One queue and picker, with only one set of GPU models loaded at a time."""
+    video_progress = Signal(int, int, dict)
+    person_selected = Signal(str, object)
+
+    def __init__(self, engine, mode, *, video_ranges, video_selections, **kwargs):
+        super().__init__(engine, mode, **kwargs)
+        self.video_ranges = dict(video_ranges)
+        self.video_selections = dict(video_selections)
+        self.video_engine = None
+        self.active_engine = engine
+
+    def _video_person(self, path, start, end):
+        selection = self.video_selections.get(str(path))
+        if selection is None or not selection.valid(path, start):
+            def select(target, image, faces):
+                if len(faces)>1:
+                    self.face_choices.pop(core.face_selection_key(target,faces),None)
+                choice = 0 if len(faces) == 1 else self._select_face(target, image, faces)
+                if choice is None and not self._stop:
+                    raise core.FaceSelectionSkipped()
+                return choice
+            selection = video.choose_person(self.video_engine, path, start, end, select, lambda: self._stop)
+            self.video_selections[str(path)] = selection
+            self.person_selected.emit(str(path), selection)
+        return selection
+
+    def run(self):
+        outcome, payload = self.cancelled, ()
+        result = dict(total=len(self.kwargs['targets']), completed=0, skipped=0, failed=0,
+                      stopped=False, outputs=[], errors=[], provider='Not loaded')
+        try:
+            for index, path in enumerate(self.kwargs['targets']):
+                if self._stop:
+                    result['stopped'] = True
+                    break
+                try:
+                    if path.suffix.lower() in video.VIDEO_EXTENSIONS:
+                        self.engine.release_models()
+                        if self.video_engine is None:
+                            self.video_engine = video.VideoSwapEngine(models=self.engine.models,
+                                use_gpu=self.engine.use_gpu, det_size=self.engine.det_size)
+                        self.active_engine = self.video_engine
+                        start, end = self.video_ranges.get(str(path), (0., 0.))
+                        selection = self._video_person(path, start, end)
+                        def progress(done, total, counts):
+                            self.video_progress.emit(done, total, {**counts, 'media_index':index+1,
+                                'media_total':result['total'], 'name':path.name})
+                        preview = self.mode == 'video_preview'
+                        item = video.render_video(self.video_engine, self.kwargs['source_path'], path,
+                            self.kwargs['output_dir'], selection, start=start, end=end, preview=preview,
+                            character_name=self.kwargs['character_name'],
+                            preserve_mouth=self.kwargs['preserve_mouth'],
+                            destination_eyes=self.kwargs['destination_eyes'],
+                            restoration_strength=self.kwargs['restoration_strength'],
+                            should_stop=lambda:self._stop, on_log=self.log.emit, on_progress=progress)
+                        result['outputs'].append(item['output'])
+                        result['completed'] += 1
+                        result['provider'] = item['provider']
+                        if preview:
+                            result['video_preview'] = item
+                    else:
+                        if self.video_engine is not None:
+                            self.video_engine.release_models()
+                        self.active_engine = self.engine
+                        options = {k:v for k,v in self.kwargs.items() if k not in {'targets','output_dir'}}
+                        part = self.engine.batch(targets=[path], output_dir=self.kwargs['output_dir'],
+                            face_selector=self._select_face if self.ask_face else None,
+                            should_stop=lambda:self._stop, on_log=self.log.emit, **options)
+                        for key in ('completed','skipped','failed'):
+                            result[key] += part[key]
+                        result['outputs'].extend(part['outputs'])
+                        result['errors'].extend(part.get('errors', []))
+                        result['provider'] = part['provider']
+                        if part['stopped']:
+                            result['stopped'] = True
+                            break
+                except core.FaceSelectionSkipped:
+                    result['skipped'] += 1
+                    self.log.emit(f'Skipped by choice: {path.name}')
+                except core.ProcessingCancelled:
+                    result['stopped'] = True
+                    break
+                except Exception as exc:
+                    message = f'{type(exc).__name__}: {exc}'
+                    result['failed'] += 1
+                    result['errors'].append({'path':str(path),'error':message})
+                    self.log.emit(f'Failed {path.name}: {message}')
+                self.progress.emit(index+1, result['total'], result.copy())
+            outcome, payload = self.batch_ready, (result,)
+        except Exception as exc:
+            outcome, payload = self.failed, (f'{type(exc).__name__}: {exc}',)
+        finally:
+            self.last_provider = self.active_engine.provider
+            for engine in (self.engine, self.video_engine):
+                if engine is not None:
+                    try:
+                        engine.release_models()
+                    except Exception as exc:
+                        self.log.emit(f'Could not unload models: {exc}')
+            self.log.emit('Processing models unloaded; memory released for other apps.')
+        outcome.emit(*payload)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} v{VERSION} — Offline Batch Face Swap")
+        self.setWindowTitle(f"{APP_NAME} v{VERSION} · Face Swap")
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
-        self.resize(1180, 820)
+        self.resize(1180, 760)
         self.setMinimumSize(930, 650)
         self.source_path: Path | None = None
         self.targets: list[Path] = []
@@ -490,6 +622,19 @@ class MainWindow(QMainWindow):
         self.face_choices: dict[str, int] = {}
         self._face_dialog = None
         self.last_output: Path | None = None
+        self.video_ranges = {}
+        self.video_selections = {}
+        self.video_info = {}
+        self.video_preview_path = None
+        self._trim_loading = False
+        self._trim_path = None
+        self._pending_probes = []
+        self.duration_worker = None
+        self._video_quality_locked = False
+        self._photo_quality = 'careful'
+        self._photo_format = 'jpg'
+        self._video_format_locked = False
+        self._busy = False
         self._state = read_state()
         self.engine = core.SwapEngine(use_gpu=bool(self._state.get("prefer_gpu", True)))
         self._restoring_state = True
@@ -497,28 +642,25 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(22, 18, 22, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(16, 12, 16, 10)
+        root.setSpacing(8)
 
         root.addLayout(self._build_header())
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_workflow(), "Photos")
-        from video_tab import VideoTab
-        self.video_tab = VideoTab(self, choose_files=native_video_files,
-            choose_directory=native_directory, open_path=native_open_path,
-            notify_folder=notify_output_folder, face_dialog=FaceSelectionDialog, image_view=ImageView)
-        self.video_scroll = QScrollArea()
-        self.video_scroll.setWidgetResizable(True)
-        self.video_scroll.setFrameShape(QFrame.NoFrame)
-        self.video_scroll.setWidget(self.video_tab)
-        self.tabs.addTab(self.video_scroll, "Video")
-        root.addWidget(self.tabs, stretch=1)
-        root.addWidget(self._build_options())
+        root.addWidget(self._build_workflow(), stretch=1)
+        options = self._build_options()
+        options.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        root.addWidget(options)
         root.addLayout(self._build_actions())
         root.addWidget(self.progress)
         root.addWidget(self.log, stretch=0)
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        credit = QLabel(f'v{VERSION} · Made with <span style="color:{ACCENT}">♥</span> by Long Weekend Labs')
+        credit.setObjectName('madeWithLove')
+        credit.setTextFormat(Qt.RichText)
+        footer.addWidget(credit)
+        root.addLayout(footer)
 
-        self.tabs.currentChanged.connect(self._mode_changed)
         self._apply_style()
         self._restore_state()
         self._restoring_state = False
@@ -527,31 +669,24 @@ class MainWindow(QMainWindow):
 
     def _build_header(self):
         row = QHBoxLayout()
-        titles = QVBoxLayout()
-        brand_row = QHBoxLayout()
-        brand_row.setSpacing(9)
+        row.setSpacing(10)
+        logo = QLabel()
+        logo.setFixedSize(34,34)
+        if ICON_PATH.exists():
+            logo.setPixmap(QIcon(str(ICON_PATH)).pixmap(34,34))
+        row.addWidget(logo)
         brand = QLabel(APP_NAME)
         brand.setObjectName("brand")
-        brand_row.addWidget(brand)
-        version = QLabel(f"v{VERSION}")
-        version.setObjectName("versionBadge")
-        brand_row.addWidget(version, alignment=Qt.AlignVCenter)
-        brand_row.addStretch(1)
-        titles.addLayout(brand_row)
-        subtitle = QLabel("One source face. Photos and short videos. Private and offline.")
+        row.addWidget(brand)
+        subtitle = QLabel(TAGLINE)
         subtitle.setObjectName("pageSub")
-        titles.addWidget(subtitle)
-        credit = QLabel('Made with <span style="color:#ff7a5c">♥</span> by Long Weekend Labs')
-        credit.setTextFormat(Qt.RichText)
-        credit.setObjectName("madeWithLove")
-        titles.addWidget(credit)
-        row.addLayout(titles)
-        row.addStretch(1)
+        subtitle.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
+        row.addWidget(subtitle,1)
         self.model_status = QPushButton()
         self.model_status.setObjectName("statusPill")
         self.model_status.clicked.connect(self._show_model_setup)
-        row.addWidget(self.model_status, alignment=Qt.AlignTop)
-        row.addWidget(self._build_more_menu(), alignment=Qt.AlignTop)
+        row.addWidget(self.model_status)
+        row.addWidget(self._build_more_menu())
         return row
 
     def _build_more_menu(self) -> QToolButton:
@@ -593,6 +728,7 @@ class MainWindow(QMainWindow):
 
     def _show_settings(self) -> None:
         SettingsDialog(self._state, self._save_state, self).exec()
+        self.engine.use_gpu = bool(self._state.get('prefer_gpu',True))
         self._refresh_model_status()
 
     def _show_model_setup(self) -> None:
@@ -612,7 +748,7 @@ class MainWindow(QMainWindow):
         source_layout.addWidget(self.source_view, stretch=1)
         source_footer = QWidget()
         source_footer.setObjectName("cardFooter")
-        source_footer.setFixedHeight(96)
+        source_footer.setFixedHeight(112)
         source_footer_layout = QVBoxLayout(source_footer)
         source_footer_layout.setContentsMargins(0, 0, 0, 0)
         source_footer_layout.setSpacing(6)
@@ -628,12 +764,12 @@ class MainWindow(QMainWindow):
         self.character_name.setMaxLength(80)
         self.character_name.textChanged.connect(self._on_character_name_changed)
         source_footer_layout.addWidget(self.character_name)
-        source_button = QPushButton("Choose source photo…")
-        source_button.clicked.connect(self._choose_source)
-        source_footer_layout.addWidget(source_button)
+        self.source_button = QPushButton("Choose source photo…")
+        self.source_button.clicked.connect(self._choose_source)
+        source_footer_layout.addWidget(self.source_button)
         source_layout.addWidget(source_footer)
 
-        destinations_box = QGroupBox("2 — Destination photos")
+        destinations_box = QGroupBox("2 — Destination media")
         destinations_layout = QVBoxLayout(destinations_box)
         destinations_layout.setSpacing(8)
         self.target_list = QListWidget()
@@ -645,17 +781,23 @@ class MainWindow(QMainWindow):
         destinations_layout.addWidget(self.target_list, stretch=1)
         destinations_footer = QWidget()
         destinations_footer.setObjectName("cardFooter")
-        destinations_footer.setFixedHeight(96)
+        destinations_footer.setFixedHeight(112)
         destinations_footer_layout = QVBoxLayout(destinations_footer)
         destinations_footer_layout.setContentsMargins(0, 0, 0, 0)
         destinations_footer_layout.setSpacing(6)
-        self.target_count = QLabel("No destination photos")
+        self.target_count = QLabel("No destination media")
         self.target_count.setObjectName("fileName")
-        destinations_footer_layout.addWidget(self.target_count)
-        destinations_footer_layout.addStretch(1)
+        self.target_count.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
+        count_row = QHBoxLayout()
+        count_row.addWidget(self.target_count,1)
+        self.include_videos = QCheckBox('Include videos')
+        self.include_videos.setToolTip('Enable queued videos. When any are included, all media uses Careful quality.')
+        self.include_videos.toggled.connect(self._include_videos_changed)
+        count_row.addWidget(self.include_videos)
+        destinations_footer_layout.addLayout(count_row)
         target_buttons = QHBoxLayout()
         target_buttons.setSpacing(8)
-        add_files = QPushButton("Add photos…")
+        add_files = QPushButton("Add media…")
         add_files.clicked.connect(self._add_files)
         add_folder = QPushButton("Add folder…")
         add_folder.clicked.connect(self._add_folder)
@@ -666,7 +808,28 @@ class MainWindow(QMainWindow):
         for button in (add_files, add_folder, remove, clear):
             button.setProperty("compact", True)
             target_buttons.addWidget(button, stretch=1)
+        self.target_buttons = [add_files,add_folder,remove,clear]
         destinations_footer_layout.addLayout(target_buttons)
+        self.trim_row = QWidget()
+        self.trim_row.setObjectName('cardFooter')
+        trim = QHBoxLayout(self.trim_row)
+        trim.setContentsMargins(0,0,0,0)
+        trim.setSpacing(5)
+        self.video_start = QDoubleSpinBox()
+        self.video_end = QDoubleSpinBox()
+        for spin in (self.video_start,self.video_end):
+            spin.setRange(0,864000)
+            spin.setDecimals(2)
+            spin.setSuffix(' s')
+            spin.setSingleStep(.5)
+            spin.valueChanged.connect(self._trim_changed)
+        self.video_end.setSpecialValueText('End of clip')
+        trim.addWidget(QLabel('Video from'))
+        trim.addWidget(self.video_start,1)
+        trim.addWidget(QLabel('to'))
+        trim.addWidget(self.video_end,1)
+        self.trim_row.setEnabled(False)
+        destinations_footer_layout.addWidget(self.trim_row)
         destinations_layout.addWidget(destinations_footer)
 
         preview_box = QGroupBox("Preview")
@@ -676,7 +839,7 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.preview_view, stretch=1)
         preview_footer = QWidget()
         preview_footer.setObjectName("cardFooter")
-        preview_footer.setFixedHeight(96)
+        preview_footer.setFixedHeight(112)
         preview_footer_layout = QVBoxLayout(preview_footer)
         preview_footer_layout.setContentsMargins(0, 0, 0, 0)
         preview_footer_layout.setSpacing(6)
@@ -685,6 +848,10 @@ class MainWindow(QMainWindow):
         self.preview_caption.setWordWrap(True)
         preview_footer_layout.addWidget(self.preview_caption)
         preview_footer_layout.addStretch(1)
+        self.play_preview_button = QPushButton('Play video preview')
+        self.play_preview_button.setEnabled(False)
+        self.play_preview_button.clicked.connect(self._play_video_preview)
+        preview_footer_layout.addWidget(self.play_preview_button)
         preview_layout.addWidget(preview_footer)
 
         splitter.addWidget(source_box)
@@ -704,36 +871,27 @@ class MainWindow(QMainWindow):
         self.output_edit.setPlaceholderText("Swapped files are written here; originals are never changed")
         self.output_edit.textChanged.connect(self._on_output_changed)
         browse = QPushButton("Browse…")
+        self.output_browse = browse
         browse.clicked.connect(self._choose_output)
-        grid.addWidget(output_label, 0, 0)
-        grid.addWidget(self.output_edit, 0, 1)
-        grid.addWidget(browse, 0, 2)
 
         faces_label = QLabel("When several faces are found")
         faces_label.setObjectName("fieldLabel")
         self.face_mode = QComboBox()
         self.face_mode.addItems(["Swap the largest face only", "Swap every detected face"])
+        self.face_mode.setToolTip("Photo face selection. Videos follow one person; multiple-person clips always ask you to choose.")
         self.face_mode.currentIndexChanged.connect(self._save_state)
-        self.permission = QCheckBox("I have permission to modify the selected photos / videos")
+        self.permission = QCheckBox("I have permission to edit")
         self.permission.stateChanged.connect(self._refresh_controls)
-        grid.addWidget(faces_label, 1, 0)
-        grid.addWidget(self.face_mode, 1, 1)
-        grid.addWidget(self.permission, 1, 2)
 
-        selection_label = QLabel("Face selection")
-        selection_label.setObjectName("fieldLabel")
         self.ask_face = QCheckBox("Ask which face to swap when several are detected")
         self.ask_face.setToolTip(
             "Choose one face per photo using numbered thumbnails. Single-face photos "
             "continue automatically. Overrides the largest/every-face setting while enabled. "
-            "Choices are remembered during this session."
+            "Choices are remembered during this session. Multiple-person videos always ask you to choose one person."
         )
         self.ask_face.toggled.connect(self._face_selection_changed)
         self.reset_faces_button = QPushButton("Reset face choices")
         self.reset_faces_button.clicked.connect(self._reset_face_choices)
-        grid.addWidget(selection_label, 2, 0)
-        grid.addWidget(self.ask_face, 2, 1)
-        grid.addWidget(self.reset_faces_button, 2, 2)
 
         quality_label = QLabel("Processing quality")
         quality_label.setObjectName("fieldLabel")
@@ -758,10 +916,10 @@ class MainWindow(QMainWindow):
         self.output_format = QComboBox()
         self.output_format.addItem("JPEG 98 — smaller, re-encodes the image", "jpg")
         self.output_format.addItem("Lossless PNG — unchanged pixels stay exact", "png")
+        self.output_format.addItem('MP4 video · audio kept', 'mp4')
+        self.output_format.model().item(2).setEnabled(False)
+        self.output_format.setToolTip("Choose photo output here. Videos always export MP4 with audio when present.")
         self.output_format.currentIndexChanged.connect(self._save_state)
-        grid.addWidget(quality_label, 3, 0)
-        grid.addWidget(self.quality_mode, 3, 1)
-        grid.addWidget(self.output_format, 3, 2)
         mouth_label = QLabel("Mouth detail")
         mouth_label.setObjectName("fieldLabel")
         self.preserve_mouth = QCheckBox("Protect open/obstructed target mouth")
@@ -772,10 +930,6 @@ class MainWindow(QMainWindow):
             "remain generated by the swap model. Turn off for full model-generated mouth replacement."
         )
         self.preserve_mouth.stateChanged.connect(self._save_state)
-        grid.addWidget(mouth_label, 4, 0)
-        grid.addWidget(self.preserve_mouth, 4, 1)
-        eyes_label = QLabel("Eye detail")
-        eyes_label.setObjectName("fieldLabel")
         self.destination_eyes = QCheckBox("Keep target eyes and target eye colour")
         self.destination_eyes.setChecked(False)
         self.destination_eyes.setToolTip(
@@ -784,8 +938,6 @@ class MainWindow(QMainWindow):
             "eyes. The model does not guarantee an exact source iris-colour match."
         )
         self.destination_eyes.stateChanged.connect(self._save_state)
-        grid.addWidget(eyes_label, 5, 0)
-        grid.addWidget(self.destination_eyes, 5, 1)
 
         strength_label = QLabel("Restoration strength")
         strength_label.setObjectName("fieldLabel")
@@ -805,9 +957,6 @@ class MainWindow(QMainWindow):
         self.restoration_value.setObjectName("fileName")
         self.restoration_strength.valueChanged.connect(self._restoration_changed)
         self.restoration_strength.sliderReleased.connect(self._save_state)
-        grid.addWidget(strength_label, 6, 0)
-        grid.addWidget(self.restoration_strength, 6, 1)
-        grid.addWidget(self.restoration_value, 6, 2)
         self._restoration_changed(self.restoration_strength.value())
         self.skip_completed = QCheckBox("Skip unchanged photos already completed")
         self.skip_completed.setChecked(True)
@@ -815,15 +964,47 @@ class MainWindow(QMainWindow):
             "Swapio records successful outputs in the output folder and only processes new or changed photos."
         )
         self.skip_completed.stateChanged.connect(self._save_state)
-        grid.addWidget(self.skip_completed, 4, 2)
 
+        # Five fixed control rows; only the media canvases grow with the window.
+        output_actions = QWidget()
+        output_actions.setObjectName('cardFooter')
+        actions = QHBoxLayout(output_actions)
+        actions.setContentsMargins(0,0,0,0)
+        actions.addWidget(browse)
+        actions.addWidget(self.permission)
+        face_options = QWidget()
+        face_options.setObjectName('cardFooter')
+        faces = QHBoxLayout(face_options)
+        faces.setContentsMargins(0,0,0,0)
+        faces.addWidget(self.face_mode,1)
+        self.ask_face.setText('Ask which face')
+        faces.addWidget(self.ask_face)
+        strength_options = QWidget()
+        strength_options.setObjectName('cardFooter')
+        strength = QHBoxLayout(strength_options)
+        strength.setContentsMargins(0,0,0,0)
+        strength.addWidget(self.restoration_value)
+        strength.addStretch(1)
+        strength.addWidget(self.skip_completed)
+        faces_label.setText('Face selection')
+        mouth_label.setText('Face detail')
+        for row,label,primary,secondary in (
+            (0,output_label,self.output_edit,output_actions),
+            (1,quality_label,self.quality_mode,self.output_format),
+            (2,faces_label,face_options,self.reset_faces_button),
+            (3,mouth_label,self.preserve_mouth,self.destination_eyes),
+            (4,strength_label,self.restoration_strength,strength_options),
+        ):
+            grid.addWidget(label,row,0)
+            grid.addWidget(primary,row,1)
+            grid.addWidget(secondary,row,2)
         return box
 
     def _build_actions(self):
         row = QHBoxLayout()
-        self.preview_button = QPushButton("Preview selected photo")
+        self.preview_button = QPushButton("Preview selected media")
         self.preview_button.clicked.connect(self._preview)
-        self.run_button = QPushButton("Swap all photos")
+        self.run_button = QPushButton("Swap queued media")
         self.run_button.setObjectName("primary")
         self.run_button.clicked.connect(self._run_batch)
         self.stop_button = QPushButton("Stop")
@@ -836,6 +1017,10 @@ class MainWindow(QMainWindow):
         row.addWidget(self.run_button)
         row.addWidget(self.stop_button)
         row.addWidget(self.open_button)
+        self.details_button = QPushButton('Details')
+        self.details_button.setCheckable(True)
+        self.details_button.toggled.connect(self._toggle_details)
+        row.addWidget(self.details_button)
         row.addStretch(1)
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("statusText")
@@ -846,7 +1031,8 @@ class MainWindow(QMainWindow):
         self.progress.setFormat("Ready")
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMaximumHeight(112)
+        self.log.setFixedHeight(80)
+        self.log.hide()
         self.log.setPlaceholderText("Processing details will appear here.")
         return row
 
@@ -856,6 +1042,9 @@ class MainWindow(QMainWindow):
         if not path.is_absolute():
             path = (PROJECT_DIR / path).resolve()
         return str(path if path.exists() else Path.home())
+
+    def _toggle_details(self, shown):
+        self.log.setVisible(shown)
 
     def _remember_folder(self, key: str, path: Path) -> None:
         self._state[key] = str(path.expanduser().resolve())
@@ -883,6 +1072,8 @@ class MainWindow(QMainWindow):
         self.source_name.setToolTip(str(path))
         self._remember_folder("source_dir", path.parent)
         self.preview_view.clear_image()
+        self.video_preview_path = None
+        self.play_preview_button.setEnabled(False)
         self.preview_caption.setText("Nothing generated yet")
         self._refresh_controls()
 
@@ -900,8 +1091,8 @@ class MainWindow(QMainWindow):
         self._save_state()
 
     def _add_files(self):
-        paths = native_image_files(
-            self, "Add destination photos", self._dialog_start("target_dir"), multiple=True
+        paths = native_media_files(
+            self, "Add destination media", self._dialog_start("target_dir"), multiple=True
         )
         if paths:
             self._add_targets(Path(path) for path in paths)
@@ -909,24 +1100,27 @@ class MainWindow(QMainWindow):
 
     def _add_folder(self):
         path = native_directory(
-            self, "Add a folder of destination photos", self._dialog_start("target_dir")
+            self, "Add a folder of destination media", self._dialog_start("target_dir")
         )
         if path:
             folder = Path(path)
-            self._add_targets(core.image_files(folder, recursive=True))
+            self._add_targets(sorted(p for p in folder.rglob('*')
+                if p.suffix.lower() in core.IMAGE_EXTS | video.VIDEO_EXTENSIONS))
             self.output_edit.setText(str(core.suggested_output_dir(folder)))
             self._remember_folder("target_dir", folder)
 
     def _add_targets(self, paths):
         existing = {str(path.resolve()) for path in self.targets}
         added = 0
+        videos = []
         for path in paths:
             path = Path(path)
             try:
                 resolved = str(path.resolve())
             except OSError:
                 continue
-            if path.is_file() and path.suffix.lower() in core.IMAGE_EXTS and resolved not in existing:
+            if path.is_file() and path.suffix.lower() in core.IMAGE_EXTS | video.VIDEO_EXTENSIONS and resolved not in existing:
+                path = path.resolve()
                 self.targets.append(path)
                 item = QListWidgetItem(path.name)
                 item.setToolTip(str(path))
@@ -934,12 +1128,98 @@ class MainWindow(QMainWindow):
                 self.target_list.addItem(item)
                 existing.add(resolved)
                 added += 1
+                if self._is_video(path):
+                    videos.append(path)
         if added and self.target_list.currentRow() < 0:
             self.target_list.setCurrentRow(0)
         if added and not self.output_edit.text().strip():
             self.output_edit.setText(str(self._default_output_dir()))
         self._refresh_target_count()
+        self._sync_video_quality()
         self._refresh_controls()
+        self._pending_probes.extend(videos)
+        self._start_duration_scan()
+
+    @staticmethod
+    def _is_video(path):
+        return path is not None and Path(path).suffix.lower() in video.VIDEO_EXTENSIONS
+
+    def _active_targets(self):
+        return [p for p in self.targets if not self._is_video(p) or self.include_videos.isChecked()]
+
+    def _sync_video_quality(self):
+        locked = self.include_videos.isChecked() and any(self._is_video(p) for p in self.targets)
+        if locked and not self._video_quality_locked:
+            self._photo_quality = self.quality_mode.currentData()
+            self.quality_mode.blockSignals(True)
+            self.quality_mode.setCurrentIndex(self.quality_mode.findData('careful'))
+            self.quality_mode.blockSignals(False)
+        elif not locked and self._video_quality_locked:
+            self.quality_mode.blockSignals(True)
+            self.quality_mode.setCurrentIndex(max(0,self.quality_mode.findData(self._photo_quality)))
+            self.quality_mode.blockSignals(False)
+        self._video_quality_locked = locked
+        self.quality_mode.setToolTip('Included videos require Careful for the whole queue. Untick Include videos to choose another mode.'
+            if locked else 'Choose photo rendering quality. Video queues use Careful.')
+
+    def _include_videos_changed(self, _checked):
+        if not hasattr(self,'quality_mode'):
+            return
+        self._sync_video_quality()
+        self._refresh_target_count()
+        self._show_selected_target(self.target_list.currentRow())
+        self._save_state()
+
+    def _trim_changed(self):
+        if self._trim_loading or self._trim_path is None:
+            return
+        key = str(self._trim_path)
+        self.video_ranges[key] = (self.video_start.value(), self.video_end.value())
+        self.video_selections.pop(key,None)
+        self.video_preview_path = None
+        self.play_preview_button.setEnabled(False)
+        self.preview_caption.setText('Range changed. Generate a new 2-second preview.')
+
+    def _start_duration_scan(self):
+        if getattr(self,'_closing',False) or not self._pending_probes:
+            return
+        if self.duration_worker is not None and self.duration_worker.isRunning():
+            return
+        paths,self._pending_probes = self._pending_probes,[]
+        self.duration_worker = DurationWorker(paths)
+        self.duration_worker.ready.connect(self._durations_ready)
+        self.duration_worker.finished.connect(self._duration_scan_finished)
+        self.duration_worker.start()
+        self._refresh_controls()
+
+    def _duration_scan_finished(self):
+        self._start_duration_scan()
+        self._refresh_controls()
+
+    def _durations_ready(self, results):
+        warnings = []
+        for path,info in results.items():
+            if Path(path) not in self.targets:
+                continue
+            self.video_info[path] = info
+            if isinstance(info,str):
+                warnings.append(f'{Path(path).name}: could not inspect duration. {info}')
+            elif info.duration > 180:
+                warnings.append(f'{Path(path).name}: {info.duration/60:.1f} minutes (over 3 minutes).')
+            elif info.duration > 60:
+                warnings.append(f'{Path(path).name}: {info.duration/60:.1f} minutes (over 1 minute).')
+        if self._is_video(self._selected_target()) and str(self._selected_target()) in results:
+            self._show_selected_target(self.target_list.currentRow())
+        if warnings:
+            QMessageBox.warning(self,'Video duration', '\n'.join(warnings[:12])
+                + ('\nMore long clips are in the queue.' if len(warnings)>12 else '')
+                + '\n\nCareful video rendering can take a long time. Select a clip and adjust Video from / to for a shorter range. Originals stay untouched.')
+        self._refresh_controls()
+
+    def _play_video_preview(self):
+        if self.video_preview_path and self.video_preview_path.is_file():
+            if not native_open_path(self.video_preview_path):
+                QMessageBox.warning(self,'Play preview',f'Could not open your video player.\n{self.video_preview_path}')
 
     def _default_output_dir(self) -> Path:
         """Choose a sibling folder so recursive imports never ingest outputs."""
@@ -951,13 +1231,21 @@ class MainWindow(QMainWindow):
         row = self.target_list.currentRow()
         if row < 0:
             return
-        self.targets.pop(row)
+        path = self.targets.pop(row)
+        self.video_selections.pop(str(path),None)
+        self.video_ranges.pop(str(path),None)
+        self.video_info.pop(str(path),None)
         self.target_list.takeItem(row)
+        self._sync_video_quality()
         self._refresh_target_count()
         self._refresh_controls()
 
     def _clear_targets(self):
         self.targets.clear()
+        self.video_ranges.clear()
+        self.video_selections.clear()
+        self.video_info.clear()
+        self._sync_video_quality()
         self.target_list.clear()
         self.preview_view.clear_image()
         self.preview_caption.setText("Nothing generated yet")
@@ -965,18 +1253,50 @@ class MainWindow(QMainWindow):
         self._refresh_controls()
 
     def _refresh_target_count(self):
-        count = len(self.targets)
-        self.target_count.setText(
-            "No destination photos" if not count else f"{count} destination photo{'s' if count != 1 else ''}"
-        )
+        movies = sum(self._is_video(p) for p in self.targets)
+        photos = len(self.targets)-movies
+        parts = []
+        if photos: parts.append(f'{photos} photo'+('s' if photos!=1 else ''))
+        if movies: parts.append(f'{movies} video'+('s' if movies!=1 else '')+(' (excluded)' if not self.include_videos.isChecked() else ''))
+        text = ' · '.join(parts) or 'No destination media'
+        self.target_count.setText(text)
+        self.target_count.setToolTip(text)
+        for index,path in enumerate(self.targets):
+            item = self.target_list.item(index)
+            excluded = self._is_video(path) and not self.include_videos.isChecked()
+            item.setText(('Video · ' if self._is_video(path) else '')+path.name)
+            item.setForeground(QColor(MUTED if excluded else TEXT))
 
     def _show_selected_target(self, row: int):
-        if row < 0 or row >= len(self.targets):
+        if not hasattr(self,'preview_view'):
             return
+        target = self.targets[row] if 0<=row<len(self.targets) else None
         if self.worker and self.worker.isRunning():
             return
+        self._trim_loading = True
+        self._trim_path = target if self._is_video(target) else None
+        start,end = self.video_ranges.get(str(target),(0.,0.))
+        info = self.video_info.get(str(target))
+        maximum = info.duration if isinstance(info,video.VideoInfo) else 864000
+        self.video_start.setMaximum(maximum)
+        self.video_end.setMaximum(maximum)
+        self.video_start.setValue(start)
+        self.video_end.setValue(end)
+        self._trim_loading = False
+        self.video_preview_path = None
+        self.play_preview_button.setEnabled(False)
+        if target is None:
+            self.preview_view.clear_image()
+            self.preview_caption.setText('Nothing generated yet')
+            self._refresh_controls()
+            return
         self.preview_view.clear_image("Click Preview to generate this result")
-        self.preview_caption.setText(self.targets[row].name)
+        if self._is_video(target):
+            duration = f'{info.duration:.1f} s · ' if isinstance(info,video.VideoInfo) else ''
+            self.preview_caption.setText(duration+('2-second video preview · select the person when prompted'
+                if self.include_videos.isChecked() else 'Tick Include videos to preview or render this clip.'))
+        else:
+            self.preview_caption.setText(target.name)
         self._refresh_controls()
 
     def _choose_output(self):
@@ -1000,6 +1320,9 @@ class MainWindow(QMainWindow):
 
     def _reset_face_choices(self):
         self.face_choices.clear()
+        self.video_selections.clear()
+        self.video_preview_path = None
+        self.play_preview_button.setEnabled(False)
         self.preview_view.clear_image("Click Preview to choose a face")
         self.preview_caption.setText("Face choices reset")
         self._refresh_controls()
@@ -1018,7 +1341,7 @@ class MainWindow(QMainWindow):
                 worker.stop()
             else:
                 worker.submit_face_choice(dialog.selected_index if result == QDialog.Accepted else None)
-            self.status_label.setText("Generating preview…" if worker.mode == "preview" else "Swapping photos…")
+            self.status_label.setText("Generating preview…" if worker.mode in {"preview","video_preview"} else "Swapping media…")
         except Exception as exc:
             worker.stop()
             self.log.appendPlainText(f"Face picker stopped: {exc}")
@@ -1043,7 +1366,7 @@ class MainWindow(QMainWindow):
         return self.quality_mode.currentData()
 
     def _output_format(self) -> str:
-        return self.output_format.currentData()
+        return self._photo_format if self._video_format_locked else self.output_format.currentData()
 
     def _selected_target(self) -> Path | None:
         row = self.target_list.currentRow()
@@ -1052,6 +1375,9 @@ class MainWindow(QMainWindow):
     def _preview(self):
         target = self._selected_target()
         if not self.source_path or not target:
+            return
+        if self._is_video(target):
+            self._preview_video(target)
             return
         self.log.clear()
         self.log.appendPlainText(f"Previewing {target.name}...")
@@ -1070,7 +1396,7 @@ class MainWindow(QMainWindow):
             destination_eyes=self.destination_eyes.isChecked(),
             restoration_strength=self._restoration_strength(),
         )
-        self.worker.log.connect(self.log.appendPlainText)
+        self.worker.log.connect(self._log_message)
         self.worker.preview_ready.connect(self._preview_ready)
         self.worker.failed.connect(self._failed)
         self.worker.cancelled.connect(self._preview_cancelled)
@@ -1079,6 +1405,82 @@ class MainWindow(QMainWindow):
         self._set_running(True)
         self.status_label.setText("Generating preview…")
         self.worker.start()
+
+    def _media_worker(self, mode, targets, output):
+        worker = MediaWorker(self.engine, mode, ask_face=self.ask_face.isChecked(),
+            face_choices=self.face_choices, video_ranges=self.video_ranges,
+            video_selections=self.video_selections, source_path=self.source_path,
+            targets=list(targets), output_dir=output, all_faces=self._all_faces(),
+            quality=self._quality(), output_format=self._output_format(),
+            character_name=self.character_name.text().strip(),
+            preserve_mouth=self.preserve_mouth.isChecked(), destination_eyes=self.destination_eyes.isChecked(),
+            restoration_strength=self._restoration_strength(), skip_completed=self.skip_completed.isChecked())
+        worker.video_progress.connect(self._media_frame_progress)
+        worker.person_selected.connect(self._video_person_selected)
+        return worker
+
+    def _preview_video(self, target):
+        if not self.include_videos.isChecked():
+            return
+        answer = QMessageBox.information(self,'2-second video preview',
+            'Swapio will render a 2-second preview using Careful. This can take a few minutes depending on the face and your device.\n\nUse Play video preview when it finishes to review motion and audio.',
+            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Ok)
+        if answer != QMessageBox.Ok:
+            return
+        output = Path(self.output_edit.text().strip() or str(self._default_output_dir())).expanduser()
+        self.last_output = output
+        self.video_preview_path = None
+        self.play_preview_button.setEnabled(False)
+        self.log.clear()
+        self.progress.setRange(0,0)
+        self.progress.setFormat('Preparing 2-second video preview…')
+        self.worker = self._media_worker('video_preview',[target],output/'.swapio-previews')
+        self.worker.log.connect(self._log_message)
+        self.worker.batch_ready.connect(self._video_preview_ready)
+        self.worker.failed.connect(self._failed)
+        self.worker.cancelled.connect(self._preview_cancelled)
+        self.worker.face_choice_requested.connect(self._face_choice_requested)
+        self.worker.finished.connect(self._refresh_controls)
+        self._set_running(True)
+        self.status_label.setText('Preparing video preview…')
+        self.worker.start()
+
+    def _video_person_selected(self, path, selection):
+        self.video_selections[path] = selection
+        if self._selected_target() == Path(path):
+            marked = selection.image.copy()
+            l,t,r,b = np.rint(selection.box).astype(int)
+            cv2.rectangle(marked,(l,t),(r,b),(92,122,255),2)
+            self.preview_view.set_image(marked)
+            self.preview_caption.setText('Selected person. Rendering with Careful…')
+
+    def _media_frame_progress(self, done, total, counts):
+        self._refresh_model_status()
+        self.progress.setRange(0,max(total,done))
+        self.progress.setValue(done)
+        self.progress.setFormat(f"Media {counts['media_index']}/{counts['media_total']} · frame {done}/{total} · {counts['unchanged']} unchanged")
+        self.status_label.setText(f"{counts['provider']} · ~{counts['eta']:.0f}s left")
+
+    def _video_preview_ready(self, result):
+        item = result.get('video_preview')
+        if item is None:
+            if result['failed']:
+                self._failed(result['errors'][0]['error'])
+            else:
+                self._preview_cancelled()
+            return
+        self._set_running(False)
+        self.video_preview_path = Path(item['output'])
+        self.preview_view.set_image(item['image'])
+        self.preview_caption.setText(f"Video preview · {item['duration']:.2f} s · {item['unchanged']} unchanged frame(s)")
+        self.preview_caption.setToolTip(item['output'])
+        self.play_preview_button.setEnabled(True)
+        notify_output_folder(self.video_preview_path.parent)
+        self.progress.setRange(0,1)
+        self.progress.setValue(1)
+        self.progress.setFormat('2-second preview ready · Play video preview')
+        self.status_label.setText('Preview ready')
+        self._refresh_model_status()
 
     def _preview_ready(self, result: dict):
         self._set_running(False)
@@ -1098,6 +1500,9 @@ class MainWindow(QMainWindow):
         self._refresh_model_status()
 
     def _run_batch(self):
+        targets = self._active_targets()
+        if not targets:
+            return
         output_text = self.output_edit.text().strip()
         if not output_text:
             if not self.targets:
@@ -1116,37 +1521,41 @@ class MainWindow(QMainWindow):
         self.last_output = output
         self._notified_saved = 0
         self.log.clear()
-        self.progress.setRange(0, len(self.targets))
+        self.progress.setRange(0, len(targets))
         self.progress.setValue(0)
-        self.progress.setFormat(f"0/{len(self.targets)}")
-        self.worker = TaskWorker(
-            self.engine,
-            "batch",
-            ask_face=self.ask_face.isChecked(),
-            face_choices=self.face_choices,
-            source_path=self.source_path,
-            targets=list(self.targets),
-            output_dir=output,
-            all_faces=self._all_faces(),
-            quality=self._quality(),
-            output_format=self._output_format(),
-            character_name=self.character_name.text().strip(),
-            preserve_mouth=self.preserve_mouth.isChecked(),
-            destination_eyes=self.destination_eyes.isChecked(),
-            restoration_strength=self._restoration_strength(),
-            skip_completed=self.skip_completed.isChecked(),
-        )
-        self.worker.log.connect(self.log.appendPlainText)
+        self.progress.setFormat(f"0/{len(targets)}")
+        if any(self._is_video(p) for p in targets):
+            self.worker = self._media_worker('batch',targets,output)
+        else:
+            self.worker = TaskWorker(
+                self.engine,
+                "batch",
+                ask_face=self.ask_face.isChecked(),
+                face_choices=self.face_choices,
+                source_path=self.source_path,
+                targets=targets,
+                output_dir=output,
+                all_faces=self._all_faces(),
+                quality=self._quality(),
+                output_format=self._output_format(),
+                character_name=self.character_name.text().strip(),
+                preserve_mouth=self.preserve_mouth.isChecked(),
+                destination_eyes=self.destination_eyes.isChecked(),
+                restoration_strength=self._restoration_strength(),
+                skip_completed=self.skip_completed.isChecked(),
+            )
+        self.worker.log.connect(self._log_message)
         self.worker.progress.connect(self._progress)
         self.worker.batch_ready.connect(self._batch_ready)
         self.worker.failed.connect(self._failed)
         self.worker.face_choice_requested.connect(self._face_choice_requested)
         self.worker.finished.connect(self._refresh_controls)
         self._set_running(True)
-        self.status_label.setText("Swapping photos…")
+        self.status_label.setText("Swapping media…")
         self.worker.start()
 
     def _progress(self, done: int, total: int, counts: dict):
+        self._refresh_model_status()
         completed = counts.get("completed", 0)
         if completed > getattr(self, "_notified_saved", 0) and self.last_output:
             self._notified_saved = completed
@@ -1182,9 +1591,9 @@ class MainWindow(QMainWindow):
                 message.setIcon(QMessageBox.Warning)
                 message.setWindowTitle("Batch finished with errors")
                 message.setText(
-                    f"Saved {result['completed']} swapped photo(s).\n"
-                    f"Skipped {result['skipped']} photo(s).\n"
-                    f"Failed {result['failed']}. Failed photos have no new output."
+                    f"Saved {result['completed']} swapped media file(s).\n"
+                    f"Skipped {result['skipped']} item(s).\n"
+                    f"Failed {result['failed']}. Failed items have no new output."
                 )
                 errors = result.get("errors", [])
                 first = errors[0] if errors else None
@@ -1200,8 +1609,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Batch complete",
-                f"Saved {result['completed']} swapped photo(s).\n"
-                f"Skipped {result['skipped']} photo(s).\n"
+                f"Saved {result['completed']} swapped media file(s).\n"
+                f"Skipped {result['skipped']} item(s).\n"
                 f"Failed {result['failed']}.\n\n"
                 f"Output: {self.last_output}",
             )
@@ -1211,7 +1620,7 @@ class MainWindow(QMainWindow):
             self.worker.stop()
             if self._face_dialog is not None:
                 self._face_dialog.reject()
-            self.status_label.setText("Stopping after this frame…" if self.tabs.currentIndex()==1 else "Stopping after this photo…")
+            self.status_label.setText("Stopping after the current item/frame…")
 
     def _failed(self, message: str):
         self._set_running(False)
@@ -1233,78 +1642,81 @@ class MainWindow(QMainWindow):
                 )
 
     def _set_running(self, running: bool):
-        if running:
-            self.model_status.setText("● Offline · Processing")
-            self.model_status.setToolTip("Processing models stay loaded for this job and unload when it finishes.")
-        self.preview_button.setEnabled(not running)
-        self.run_button.setEnabled(not running)
-        self.stop_button.setEnabled(running)
-        self.target_list.setEnabled(not running)
-        self.ask_face.setEnabled(not running)
-        self.reset_faces_button.setEnabled(not running and bool(self.face_choices))
-        self.face_mode.setEnabled(not running and not self.ask_face.isChecked())
-        self.tabs.tabBar().setEnabled(not running)
-        self.video_tab.set_busy(running)
-        if not running:
-            self._refresh_controls()
-
-    def _mode_changed(self, _index):
-        video_mode = self.tabs.currentIndex() == 1
-        self.options_grid.addWidget(self.permission, 5 if video_mode else 1, 2)
-        for widget in (self.preview_button, self.run_button):
-            widget.setVisible(not video_mode)
-        for row,column in ((1,0),(1,1),(2,0),(2,1),(2,2),(3,0),(3,1),(3,2),(4,2)):
-            item = self.options_grid.itemAtPosition(row,column)
-            if item and item.widget():
-                item.widget().setVisible(not video_mode)
+        self._busy = running
         self._refresh_controls()
+        self._refresh_model_status()
+
+    def _log_message(self, message):
+        self.log.appendPlainText(message)
+        self._refresh_model_status()
 
     def _refresh_controls(self):
-        running = bool(self.worker and self.worker.isRunning())
+        running = self._busy or bool(self.worker and self.worker.isRunning())
+        self._sync_video_quality()
         self.ask_face.setEnabled(not running)
         self.face_mode.setEnabled(not running and not self.ask_face.isChecked())
-        self.reset_faces_button.setEnabled(not running and self.ask_face.isChecked() and bool(self.face_choices))
-        ready = (
-            not running
-            and self.source_path is not None
-            and bool(self.targets)
-            and self.permission.isChecked()
-            and not core.missing_models()
-        )
-        self.preview_button.setEnabled(ready and self._selected_target() is not None)
+        self.reset_faces_button.setEnabled(not running and bool(self.face_choices or self.video_selections))
+        active = self._active_targets()
+        video_only = bool(active) and all(self._is_video(p) for p in active)
+        if video_only and not self._video_format_locked:
+            self._photo_format = self.output_format.currentData()
+            self.output_format.blockSignals(True)
+            self.output_format.setCurrentIndex(self.output_format.findData('mp4'))
+            self.output_format.blockSignals(False)
+        elif not video_only and self._video_format_locked:
+            self.output_format.blockSignals(True)
+            self.output_format.setCurrentIndex(max(0,self.output_format.findData(self._photo_format)))
+            self.output_format.blockSignals(False)
+        self._video_format_locked = video_only
+        inspecting = any(self._is_video(p) and str(p) not in self.video_info for p in active)
+        ready = (not running and self.source_path is not None and bool(active)
+                 and not inspecting and self.permission.isChecked() and not core.missing_models())
+        target = self._selected_target()
+        self.preview_button.setEnabled(ready and target is not None and target in active)
         self.run_button.setEnabled(ready)
-        video_mode = self.tabs.currentIndex() == 1
-        self.quality_mode.setEnabled(not running and not video_mode)
-        self.output_format.setEnabled(not running and not video_mode)
-        self.ask_face.setEnabled(not running and not video_mode)
-        self.face_mode.setEnabled(not running and not video_mode and not self.ask_face.isChecked())
-        self.reset_faces_button.setEnabled(not running and not video_mode and self.ask_face.isChecked() and bool(self.face_choices))
+        self.quality_mode.setEnabled(not running and not self._video_quality_locked)
+        self.target_list.setEnabled(not running)
+        self.include_videos.setEnabled(not running)
+        self.source_button.setEnabled(not running)
+        for button in self.target_buttons:
+            button.setEnabled(not running)
+        self.trim_row.setEnabled(not running and self._is_video(target) and self.include_videos.isChecked())
+        self.play_preview_button.setEnabled(not running and self.video_preview_path is not None)
+        for widget in (self.output_edit,self.output_browse,self.output_format,self.preserve_mouth,
+                       self.destination_eyes,self.restoration_strength,self.skip_completed,self.permission,self.character_name):
+            widget.setEnabled(not running)
+        self.output_format.setEnabled(not running and not video_only)
         self.stop_button.setEnabled(running)
-        self.video_tab.set_busy(running)
 
     def _refresh_model_status(self):
-        status_engine = self.worker.engine if self.worker is not None else self.engine
+        status_engine = getattr(self.worker,'active_engine',self.worker.engine) if self.worker is not None else self.engine
+        running = self._busy or bool(self.worker and self.worker.isRunning())
+        provider = status_engine.provider
+        last = getattr(self.worker,'last_provider','Not loaded')
+        prefer_gpu = bool(self._state.get('prefer_gpu',True))
+        cuda_available = SettingsDialog._gpu_description()[0]
         missing = core.missing_models()
         if missing:
-            self.model_status.setText("↓ Download models · ~1.5 GB")
-            self.model_status.setProperty("state", "warning")
-            self.model_status.setToolTip("Missing: " + ", ".join(missing) + "\nClick to set up.")
-        elif status_engine.models_released:
-            self.model_status.setText("● Offline · Idle")
-            self.model_status.setProperty("state", "ready")
-            self.model_status.setToolTip(
-                "Processing models are unloaded between jobs to release memory.\n"
-                "They reload automatically for the next preview or batch.\n"
-                + str(core.model_dir())
-            )
-        elif status_engine.provider != "Not loaded":
-            self.model_status.setText(f"● Offline · {status_engine.provider}")
-            self.model_status.setProperty("state", "ready")
-            self.model_status.setToolTip(str(core.model_dir()))
+            self.model_status.setText('Models missing · Setup')
+            self.model_status.setProperty('state','warning')
+            self.model_status.setToolTip('Missing: '+', '.join(missing)+'\nClick to set up.')
         else:
-            self.model_status.setText("● Offline models ready")
-            self.model_status.setProperty("state", "ready")
-            self.model_status.setToolTip(str(core.model_dir()))
+            actual = provider if provider != 'Not loaded' else last
+            fallback = prefer_gpu and actual == 'CPU'
+            if running and provider != 'Not loaded':
+                label = ('CPU fallback' if fallback else provider)+' · Processing'
+            elif running:
+                label = 'Starting CUDA…' if prefer_gpu and cuda_available else 'Starting CPU…'
+            else:
+                device = 'CPU fallback' if fallback else ('CUDA enabled' if prefer_gpu and cuda_available else 'CPU')
+                label = device+' · Idle'
+            self.model_status.setText('● '+label)
+            self.model_status.setProperty('state','warning' if fallback else 'ready')
+            self.model_status.setToolTip(
+                f"GPU preference: {'enabled' if prefer_gpu else 'disabled'}. CUDA runtime: {'available' if cuda_available else 'unavailable'}.\n"
+                + (f'Current inference: {provider}.' if running and provider!='Not loaded' else f'Last inference: {last}. Models are unloaded while idle and reload automatically for the next job.')
+                + '\nCUDA availability is verified when inference starts; any CPU fallback is reported in Details.\n'
+                + str(core.model_dir()))
         self.model_status.style().unpolish(self.model_status)
         self.model_status.style().polish(self.model_status)
 
@@ -1329,6 +1741,7 @@ class MainWindow(QMainWindow):
             ))
         )
         self.skip_completed.setChecked(bool(self._state.get("skip_completed", True)))
+        self.include_videos.setChecked(bool(self._state.get('include_videos',False)))
 
     def _save_state(self):
         if self._restoring_state:
@@ -1336,7 +1749,8 @@ class MainWindow(QMainWindow):
         self._state["output_dir"] = self.output_edit.text().strip()
         self._state["face_mode"] = self.face_mode.currentIndex()
         self._state["ask_face"] = self.ask_face.isChecked()
-        self._state["quality"] = self._quality()
+        self._state["quality"] = self._photo_quality if self._video_quality_locked else self._quality()
+        self._state['include_videos'] = self.include_videos.isChecked()
         self._state["output_format"] = self._output_format()
         self._state["preserve_mouth"] = self.preserve_mouth.isChecked()
         self._state["destination_eyes"] = self.destination_eyes.isChecked()
@@ -1355,7 +1769,7 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Swap still running",
-                "Stop after the current frame and close?" if self.tabs.currentIndex()==1 else "Stop after the current photo and close?",
+                "Stop after the current item/frame and close?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -1366,6 +1780,10 @@ class MainWindow(QMainWindow):
             if self._face_dialog is not None:
                 self._face_dialog.reject()
             self.worker.wait()
+        self._closing = True
+        if self.duration_worker is not None and self.duration_worker.isRunning():
+            self.duration_worker.requestInterruption()
+            self.duration_worker.wait()
         self._save_state()
         event.accept()
 
@@ -1418,6 +1836,7 @@ class MainWindow(QMainWindow):
             QLineEdit, QComboBox {{ background:{INPUT}; border:1px solid {BORDER}; border-radius:7px;
                                     padding:7px 9px; color:{TEXT}; selection-background-color:{ACCENT}; }}
             QLineEdit:focus, QComboBox:focus {{ border-color:{ACCENT}; }}
+            QComboBox:disabled {{ color:#727c89; background:#191c22; border-color:#2a3039; }}
             QComboBox::drop-down {{ border:none; width:22px; }}
             QPushButton {{ background:{INPUT}; border:1px solid {BORDER}; border-radius:7px;
                            padding:8px 14px; color:{TEXT}; }}

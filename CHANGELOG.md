@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-31
+
+### Changed
+
+- Photos and videos now share the main three-step workflow, one media queue and common preview/render buttons. Removed the separate Video tab.
+- Include videos enables queued clips and locks quality to Careful while clips are present; unticking restores the previous photo quality. Video-only queues show MP4 output.
+- Start/end controls sit below the queue and remember each clip's range. Import warns above one minute and again above three minutes. Video preview is now up to two seconds, with a confirmation explaining the processing time.
+- Compact header with the app icon and description together; version and publisher credit move to the bottom right. Control rows keep their height as the window grows, and Details expands only when requested.
+- The device indicator names CUDA or CPU, shows processing/idle state and reports CPU fallback. Processing models unload before switching between photo/video engines and before job completion.
+
+Face-generation models and the accepted photo renderer are unchanged. Available for local source testing; downloadable packages have not been rebuilt.
+
 ## [0.6.0] - 2026-10-31
 
 ### Added

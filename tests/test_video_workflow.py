@@ -1,117 +1,163 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from pathlib import Path
+from fractions import Fraction
 from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
-
+import numpy as np
 from PySide6.QtCore import QThread, QPoint
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTabWidget
 import app
-from video_tab import VideoWorker
+import video_core as video
 
 QT_APP=QApplication.instance() or QApplication([])
 
+class UnifiedMediaTests(unittest.TestCase):
+    def setUp(self):
+        for target,value in [('app.read_state',{}),('app.write_state',None),('app.core.missing_models',[]),('app.DurationWorker.start',None)]:
+            mocked=patch(target,return_value=value);mocked.start();self.addCleanup(mocked.stop)
+        self.window=app.MainWindow();self.addCleanup(self.window.close)
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name)
 
-class VideoWorkflowTests(unittest.TestCase):
-    @patch('app.read_state',return_value={})
-    @patch('app.write_state')
-    def test_default_window_has_nonoverlapping_video_controls_and_visible_preview(self,*_):
-        window=app.MainWindow();window.resize(1180,820);window.show();window.tabs.setCurrentIndex(1)
-        for _ in range(3): QT_APP.processEvents()
-        tab=window.video_tab
-        self.assertLessEqual(tab.view.mapTo(tab,QPoint(0,tab.view.height())).y(),tab.caption.mapTo(tab,QPoint(0,0)).y())
-        viewport=window.video_scroll.viewport()
-        self.assertGreaterEqual(tab.preview_button.mapTo(viewport,QPoint(0,0)).y(),0)
-        self.assertLessEqual(tab.preview_button.mapTo(viewport,QPoint(0,tab.preview_button.height())).y(),viewport.height())
-        window.close()
+    def add(self,*names):
+        paths=[self.root/name for name in names]
+        for p in paths:p.touch()
+        self.window._add_targets(paths)
+        return paths
 
-    @patch('app.read_state',return_value={})
-    @patch('app.write_state')
-    @patch('app.core.missing_models',return_value=[])
-    def test_video_tab_keeps_photo_quality_and_disables_photo_only_options(self,*_):
-        window=app.MainWindow()
-        window.quality_mode.setCurrentIndex(window.quality_mode.findData('best'))
-        window.tabs.setCurrentIndex(1)
-        self.assertFalse(window.quality_mode.isEnabled())
-        self.assertFalse(window.ask_face.isEnabled())
-        self.assertFalse(window.output_format.isEnabled())
-        self.assertEqual(window._quality(),'best')
-        window.tabs.setCurrentIndex(0)
-        self.assertTrue(window.quality_mode.isEnabled())
-        self.assertEqual(window._quality(),'best')
-        window.close()
+    def test_controls_stay_fixed_when_resized_without_tabs_or_overlap(self):
+        w=self.window;w.show();heights=[]
+        self.assertEqual(w.findChildren(QTabWidget),[])
+        for height in (670,760,1300):
+            w.resize(1180,height)
+            for _ in range(3):QT_APP.processEvents()
+            heights.append((w.source_button.height(),w.quality_mode.height(),w.preview_button.height()))
+            self.assertLessEqual(w.source_view.mapTo(w,QPoint(0,w.source_view.height())).y(),w.source_name.mapTo(w,QPoint(0,0)).y())
+            self.assertLessEqual(w.preview_view.mapTo(w,QPoint(0,w.preview_view.height())).y(),w.preview_caption.mapTo(w,QPoint(0,0)).y())
+            self.assertLess(w.progress.mapTo(w,QPoint(0,w.progress.height())).y(),w.height())
+        self.assertTrue(all(h==heights[0] for h in heights))
 
-    @patch('app.read_state',return_value={})
-    @patch('app.write_state')
-    @patch('app.core.missing_models',return_value=[])
-    def test_ranges_belong_to_clip_and_invalidate_selection_and_preview(self,*_):
-        window=app.MainWindow();tab=window.video_tab
-        with tempfile.TemporaryDirectory() as temp:
-            paths=[Path(temp)/f'{i}.mp4' for i in range(2)]
-            for p in paths:p.touch()
-            tab.add_paths(paths)
-            tab.start.setValue(2);tab.end.setValue(5)
-            tab.files.setCurrentRow(1)
-            self.assertEqual(tab.start.value(),0)
-            tab.files.setCurrentRow(0)
-            self.assertEqual((tab.start.value(),tab.end.value()),(2,5))
-            tab.selections[str(paths[0])]=object();tab.preview_path=paths[0]
-            tab.start.setValue(3)
-            self.assertNotIn(str(paths[0]),tab.selections)
-            self.assertIsNone(tab.preview_path)
-        window.close()
+    def test_include_videos_locks_careful_only_when_clips_present_and_restores_photo_choice(self):
+        w=self.window;w.quality_mode.setCurrentIndex(w.quality_mode.findData('best'))
+        w.include_videos.setChecked(True)
+        self.assertTrue(w.quality_mode.isEnabled());self.assertEqual(w._quality(),'best')
+        photo,clip=self.add('photo.png','clip.mp4')
+        self.assertFalse(w.quality_mode.isEnabled());self.assertEqual(w._quality(),'careful')
+        w._save_state();self.assertEqual(w._state['quality'],'best')
+        w.include_videos.setChecked(False)
+        self.assertTrue(w.quality_mode.isEnabled());self.assertEqual(w._quality(),'best')
+        self.assertEqual(w._active_targets(),[photo])
+        self.assertIn('excluded',w.target_count.text())
+        w.include_videos.setChecked(True);w._clear_targets()
+        self.assertEqual(w._quality(),'best');self.assertTrue(w.quality_mode.isEnabled())
 
-    def test_worker_releases_on_worker_thread_before_every_outcome(self):
-        for error in (None,RuntimeError('render failed'),app.core.ProcessingCancelled()):
-            with self.subTest(error=error):
-                state={'released':False}
-                def release():
-                    self.assertIsNot(QThread.currentThread(),QT_APP.thread())
-                    state['released']=True
-                engine=SimpleNamespace(release_models=release)
-                selection=SimpleNamespace(valid=lambda *_:True)
-                worker=VideoWorker(engine,'preview',[(Path('/test.mp4'),0.,0.)],Path('/source.png'),
-                                   Path('/out'),{'/test.mp4':selection},{})
-                outcomes=[]
-                def receive(result):
-                    self.assertTrue(state['released']);outcomes.append(result)
-                worker.ready.connect(receive)
-                value={'output':'/out/preview.mp4'}
-                with patch('video_tab.video.render_video',side_effect=error,return_value=value):
-                    worker.start()
-                    while worker.isRunning():QT_APP.processEvents();worker.wait(10)
-                    QT_APP.processEvents()
-                self.assertEqual(len(outcomes),1)
-                self.assertEqual(outcomes[0]['stopped'],isinstance(error,app.core.ProcessingCancelled))
-                self.assertEqual(len(outcomes[0]['errors']),int(isinstance(error,RuntimeError) and not isinstance(error,app.core.ProcessingCancelled)))
+    def test_ranges_are_per_video_and_controls_ignore_photos(self):
+        w=self.window;photo,first,second=self.add('photo.png','one.mp4','two.mp4')
+        w.include_videos.setChecked(True);w.target_list.setCurrentRow(1)
+        self.assertTrue(w.trim_row.isEnabled())
+        w.video_start.setValue(2);w.video_end.setValue(5)
+        w.target_list.setCurrentRow(2);self.assertEqual(w.video_start.value(),0)
+        w.target_list.setCurrentRow(1);self.assertEqual((w.video_start.value(),w.video_end.value()),(2,5))
+        w.video_selections[str(first)]=object();w.video_preview_path=first
+        w.video_start.setValue(3)
+        self.assertNotIn(str(first),w.video_selections);self.assertIsNone(w.video_preview_path)
+        w.target_list.setCurrentRow(0);self.assertFalse(w.trim_row.isEnabled())
 
-    @patch('app.read_state',return_value={})
-    @patch('app.write_state')
-    @patch('app.core.missing_models',return_value=[])
-    def test_picker_returns_explicit_choice_and_exception_always_unblocks_worker(self,*_):
-        window=app.MainWindow();tab=window.video_tab;choices=[];stopped=[]
-        tab.worker=SimpleNamespace(_stop=False,submit_face_choice=choices.append,stop=lambda:stopped.append(True))
-        tab.face_dialog=lambda *a,**k:SimpleNamespace(exec=lambda:app.QDialog.Accepted,selected_index=1)
-        request={'target':'/clip.mp4','image':None,'boxes':[]}
-        tab._choose_face(request)
-        self.assertEqual(choices,[1])
-        def fail(*a,**k): raise RuntimeError('picker failed')
-        tab.face_dialog=fail;tab._choose_face(request)
-        self.assertEqual(stopped,[True])
-        self.assertIsNone(window._face_dialog)
-        window.close()
+    def test_video_only_queue_shows_mp4_and_restores_photo_format_when_excluded(self):
+        w=self.window;w.output_format.setCurrentIndex(w.output_format.findData('png'))
+        self.add('clip.mp4');w.include_videos.setChecked(True)
+        self.assertEqual(w.output_format.currentData(),'mp4');self.assertFalse(w.output_format.isEnabled())
+        self.assertEqual(w._output_format(),'png')
+        w.include_videos.setChecked(False)
+        self.assertEqual(w.output_format.currentData(),'png');self.assertTrue(w.output_format.isEnabled())
+
+    def test_folder_import_finds_both_media_types(self):
+        photo=self.root/'photo.jpg';photo.touch();nested=self.root/'nested';nested.mkdir();clip=nested/'clip.mp4';clip.touch()
+        with patch('app.native_directory',return_value=str(self.root)):
+            self.window._add_folder()
+        self.assertEqual(set(self.window.targets),{photo,clip})
+
+    def test_duration_warning_distinguishes_one_and_three_minutes(self):
+        a,b,c=self.add('short.mp4','long.mp4','very-long.mp4')
+        def info(path,seconds):return video.VideoInfo(path,96,96,Fraction(25),seconds,False)
+        with patch('app.QMessageBox.warning') as warning:
+            self.window._durations_ready({str(a):info(a,30),str(b):info(b,80),str(c):info(c,200)})
+        text=warning.call_args.args[2]
+        self.assertNotIn('short.mp4',text);self.assertIn('over 1 minute',text);self.assertIn('over 3 minutes',text)
+
+    def test_preview_time_popup_can_cancel_without_loading_models(self):
+        (clip,)=self.add('clip.mp4');w=self.window;w.include_videos.setChecked(True);w.source_path=self.root/'source.png'
+        with patch('app.QMessageBox.information',return_value=app.QMessageBox.Cancel) as popup:
+            w._preview()
+        self.assertIn('2-second',popup.call_args.args[1]);self.assertIn('few minutes',popup.call_args.args[2])
+        self.assertIsNone(w.worker)
+
+    def test_device_badge_names_actual_cuda_cpu_fallback_and_idle(self):
+        w=self.window
+        with patch('app.SettingsDialog._gpu_description',return_value=(True,'available')):
+            w._refresh_model_status();self.assertIn('CUDA enabled',w.model_status.text())
+            w._busy=True;w.engine.provider='CUDA';w._refresh_model_status()
+            self.assertIn('CUDA · Processing',w.model_status.text())
+            w.engine.provider='CPU';w._refresh_model_status();self.assertIn('CPU fallback',w.model_status.text())
+            self.assertNotIn('Offline',w.model_status.text())
+            w._busy=False;w.engine.provider='Not loaded'
 
     @patch('app.shutil.which',side_effect=lambda name:'/usr/bin/kdialog' if name=='kdialog' else None)
     @patch('app.subprocess.run')
-    def test_video_file_picker_uses_native_multiselect_filter(self,run,_which):
-        run.return_value=SimpleNamespace(returncode=0,stdout='/a.mp4\n/b.mov\n',stderr='')
-        self.assertEqual(app.native_video_files(None,'Videos','/tmp',True),['/a.mp4','/b.mov'])
-        command=run.call_args.args[0]
-        self.assertIn('--multiple',command)
-        self.assertIn('*.mp4',command[-1])
-        self.assertTrue(command[-1].endswith('|Videos'))
+    def test_native_media_picker_includes_photos_and_videos(self,run,_which):
+        run.return_value=SimpleNamespace(returncode=0,stdout='/a.jpg\n/b.mp4\n',stderr='')
+        self.assertEqual(app.native_media_files(None,'Media','/tmp'),['/a.jpg','/b.mp4'])
+        args=run.call_args.args[0]
+        self.assertIn('*.mp4',args[-1]);self.assertIn('*.jpg',args[-1]);self.assertIn('--multiple',args)
 
+class MediaWorkerTests(unittest.TestCase):
+    def options(self):
+        return dict(video_ranges={},video_selections={'/clip.mp4':SimpleNamespace(valid=lambda *_:True)},
+                    source_path=Path('/source.png'),targets=[Path('/clip.mp4')],output_dir=Path('/out'),
+                    all_faces=False,quality='careful',output_format='jpg',character_name='',
+                    preserve_mouth=False,destination_eyes=False,restoration_strength=0.,skip_completed=True)
+
+    def run_worker(self,worker):
+        worker.start()
+        while worker.isRunning():QT_APP.processEvents();worker.wait(10)
+        QT_APP.processEvents()
+
+    def test_worker_releases_before_notifying_for_success_failure_and_cancel(self):
+        for error in (None,RuntimeError('render failed'),app.core.ProcessingCancelled()):
+            state={'released':False}
+            photo=SimpleNamespace(models=Path('/models'),use_gpu=True,det_size=640,provider='Not loaded',release_models=lambda:None)
+            def release():
+                self.assertIsNot(QThread.currentThread(),QT_APP.thread());state['released']=True
+            movie=SimpleNamespace(provider='CUDA',release_models=release)
+            worker=app.MediaWorker(photo,'video_preview',**self.options());results=[]
+            def ready(result):self.assertTrue(state['released']);results.append(result)
+            worker.batch_ready.connect(ready)
+            with patch('app.video.VideoSwapEngine',return_value=movie),patch('app.video.render_video',side_effect=error,return_value={'output':'/out/preview.mp4','provider':'CUDA'}):
+                self.run_worker(worker)
+            self.assertEqual(len(results),1)
+            self.assertEqual(results[0]['stopped'],isinstance(error,app.core.ProcessingCancelled))
+            self.assertEqual(results[0]['failed'],int(isinstance(error,RuntimeError) and not isinstance(error,app.core.ProcessingCancelled)))
+
+    def test_photo_video_photo_queue_never_keeps_both_model_sets_loaded(self):
+        state={'photo':False,'video':False};order=[]
+        def release_photo():state['photo']=False
+        def release_video():state['video']=False
+        def photo_batch(**kwargs):
+            self.assertFalse(state['video']);state['photo']=True;order.append('photo')
+            return dict(completed=1,skipped=0,failed=0,outputs=['/out/photo.jpg'],errors=[],provider='CUDA',stopped=False)
+        def render(*args,**kwargs):
+            self.assertFalse(state['photo']);state['video']=True;order.append('video')
+            return {'output':'/out/video.mp4','provider':'CUDA'}
+        photo=SimpleNamespace(models=Path('/models'),use_gpu=True,det_size=640,provider='CUDA',release_models=release_photo,batch=photo_batch)
+        movie=SimpleNamespace(provider='CUDA',release_models=release_video)
+        options=self.options();options['targets']=[Path('/one.jpg'),Path('/clip.mp4'),Path('/two.png')]
+        worker=app.MediaWorker(photo,'batch',**options);results=[];worker.batch_ready.connect(results.append)
+        with patch('app.video.VideoSwapEngine',return_value=movie),patch('app.video.render_video',side_effect=render):
+            self.run_worker(worker)
+        self.assertEqual(order,['photo','video','photo']);self.assertEqual(results[0]['completed'],3)
+        self.assertFalse(state['photo']);self.assertFalse(state['video'])
 
 if __name__=='__main__':unittest.main()

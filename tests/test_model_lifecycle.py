@@ -98,7 +98,11 @@ class ModelLifecycleTests(unittest.TestCase):
         self.assertIn("Idle", window.model_status.text())
         self.assertIn("reload automatically", window.model_status.toolTip())
         window._set_running(True)
+        self.assertIn("Starting", window.model_status.text())
+        window.engine.provider = "CPU"
+        window._refresh_model_status()
         self.assertIn("Processing", window.model_status.text())
+        window.engine.provider = "Not loaded"
         window._preview_cancelled()
         self.assertIn("Idle", window.model_status.text())
         window.close()
