@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-31
+
+### Added
+
+- Experimental Video tab using Careful face rendering, with per-clip person selection, start/end ranges, a three-second preview opened in your video player, and sequential queue rendering.
+- Follow the selected person's original identity across frames. Leave uncertain matches unchanged and report their count instead of swapping another person.
+- Keep rendering model and sampling decisions fixed within a scene, with limited alignment jitter damping. Existing eye, mouth and restoration settings apply to video too.
+- Export verified MP4 video with audio, displayed orientation and average frame rate. Require the computer's FFmpeg and ffprobe, stream frames without an image-file sequence, clean partial movies after cancellation or failure, and release processing models after each job.
+
 ## [0.5.11] - 2026-10-31
 
 ### Fixed

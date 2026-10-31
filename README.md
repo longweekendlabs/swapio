@@ -1,6 +1,6 @@
 # Swapio
 
-**Offline batch face swapping for still photos.**
+**Offline face swapping for photos and short videos.**
 
 [![Latest release](https://img.shields.io/github/v/release/longweekendlabs/swapio?label=download)](https://github.com/longweekendlabs/swapio/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
@@ -44,6 +44,16 @@ Mouth protection keeps the target's open or obstructed expression together, incl
 
 Target-eye preservation is off by default. Enabling it keeps the target's eye interiors, eyelids, lashes and eye colour in the swapped face. Leaving it off uses generated eyes, whose colour is not guaranteed to match the source exactly. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
 
+## Preview a short video before rendering it
+
+The experimental Video tab uses Careful processing with the same source portrait, eye, mouth and restoration controls. Add clips or a folder, set each clip's start and end, and choose the person to follow. Generate a three-second preview and play it in your usual video player before rendering the queue.
+
+Tracking checks the selected person's original face identity on every frame. Uncertain matches stay unchanged and are counted in the result. The face model and sampling choice stay fixed within each continuous scene to reduce flicker; blinking, speech, occlusion and cuts still need visual review.
+
+Exports MP4 with the original audio content and displayed orientation. Variable-frame-rate inputs are converted to their average frame rate. Videos run sequentially, models unload after the job, and cancelled or failed renders remove temporary movies. Only verified outputs count as saved.
+
+Video requires the computer's FFmpeg and ffprobe, with H.264 encoding available. Swapio reports missing tools and does not download another media runtime. HDR inputs need an SDR copy for this first video version. This feature is available for local testing and has not been released in the downloadable packages yet.
+
 ## Download
 
 RPM, DEB and AppImage, for Linux on x86_64 and arm64. Grab one from the [latest release](https://github.com/longweekendlabs/swapio/releases/latest).
@@ -66,7 +76,7 @@ The application code and the pretrained models carry different licences. Insight
 
 ## Scope
 
-Still images only. Video, body reshaping, and character libraries are outside this release. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
+Photo swapping and experimental short-video swapping. Body reshaping and character libraries remain outside the app. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
 
 ## Feedback
 

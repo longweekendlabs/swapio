@@ -4,9 +4,7 @@
 #   ./packaging/build_rpm.sh --gpu    # produces dist/swapio/
 #   ./packaging/build_deb.sh          # packages it
 #
-# Like the RPM, this declares no dependencies. The PyInstaller bundle carries
-# its own Qt and ONNX Runtime, and a wrong Depends line would block the install
-# outright rather than fail politely at launch.
+# Qt and ONNX are bundled. Video uses the distribution's FFmpeg tools.
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,6 +46,7 @@ Version: ${version}
 Architecture: ${architecture}
 Maintainer: Long Weekend Labs <2272935+longweekendlabs@users.noreply.github.com>
 Section: graphics
+Depends: ffmpeg
 Priority: optional
 Installed-Size: ${installed_kb}
 Homepage: https://github.com/longweekendlabs/swapio

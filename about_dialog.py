@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 import core
-from version import APP_NAME, COPYRIGHT, GITHUB_URL, ORGANIZATION, VERSION
+from version import APP_NAME, COPYRIGHT, GITHUB_URL, ORGANIZATION, VERSION, TAGLINE
 
 
 class AboutDialog(QDialog):
@@ -41,13 +41,14 @@ class AboutDialog(QDialog):
         name.setAlignment(Qt.AlignCenter)
         layout.addWidget(name)
 
-        version = QLabel(f"Version {VERSION} · Offline batch face swapping")
+        version = QLabel(f"Version {VERSION} · {TAGLINE}")
+        version.setWordWrap(True)
         version.setObjectName("aboutVersion")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
 
         description = QLabel(
-            "Replace one face across a folder of photos while keeping the work "
+            "Replace one face across photos or short videos while keeping the work "
             "private on your own computer. Originals are never modified."
         )
         description.setObjectName("aboutDescription")

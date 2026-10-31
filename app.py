@@ -13,6 +13,7 @@ from threading import Event
 import cv2
 import numpy as np
 import core
+from media_tools import native_process_environment
 
 # Load the inference library before Qt installs its Python import feature hook.
 # Legacy InsightFace imports augmentation/schema modules that otherwise spend
@@ -48,6 +49,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSplitter,
+    QTabWidget,
+    QScrollArea,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -75,36 +78,6 @@ GREEN = "#3ddc8f"
 RED = "#ff6b6b"
 IMAGE_FILTER = "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff|Images"
 DIALOG_GEOMETRY = "1000x680"
-
-
-def native_process_environment() -> dict[str, str]:
-    """Return an environment safe for launching system desktop utilities.
-
-    PyInstaller prepends the app bundle to ``LD_LIBRARY_PATH``. That is needed
-    by Swapio itself, but it makes KDE tools load Swapio's private Qt libraries
-    instead of the matching system Qt build.
-    """
-    environment = os.environ.copy()
-    original_library_path = environment.get("LD_LIBRARY_PATH_ORIG")
-    if original_library_path:
-        environment["LD_LIBRARY_PATH"] = original_library_path
-    elif getattr(sys, "frozen", False):
-        environment.pop("LD_LIBRARY_PATH", None)
-
-    if getattr(sys, "frozen", False):
-        for variable in (
-            "QT_PLUGIN_PATH",
-            "QML2_IMPORT_PATH",
-            "QML_IMPORT_PATH",
-            "QT_QPA_PLATFORM_PLUGIN_PATH",
-            "QT_QPA_FONTDIR",
-        ):
-            original = environment.get(f"{variable}_ORIG")
-            if original is not None:
-                environment[variable] = original
-            else:
-                environment.pop(variable, None)
-    return environment
 
 
 def _native_result_paths(result: subprocess.CompletedProcess[str]) -> list[str] | None:
@@ -139,13 +112,15 @@ def write_state(data: dict) -> None:
         pass
 
 
-def native_image_files(parent, title: str, start: str, multiple: bool = False) -> list[str]:
+def native_image_files(parent, title: str, start: str, multiple: bool = False,
+                       file_filter: str = IMAGE_FILTER) -> list[str]:
     """Open the desktop-native image picker, with a Qt fallback."""
+    patterns, label = file_filter.split("|", 1)
     if shutil.which("kdialog"):
         command = ["kdialog", "--geometry", DIALOG_GEOMETRY, "--title", title]
         if multiple:
             command += ["--multiple", "--separate-output"]
-        command += ["--getopenfilename", start, IMAGE_FILTER]
+        command += ["--getopenfilename", start, file_filter]
         result = subprocess.run(
             command,
             capture_output=True,
@@ -165,7 +140,7 @@ def native_image_files(parent, title: str, start: str, multiple: bool = False) -
             "--filename",
             str(Path(start).expanduser()).rstrip("/") + "/",
             "--file-filter",
-            "Images | *.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff",
+            f"{label} | {patterns}",
         ]
         if multiple:
             command += ["--multiple", "--separator", "\n"]
@@ -181,13 +156,19 @@ def native_image_files(parent, title: str, start: str, multiple: bool = False) -
             return paths
     if multiple:
         paths, _ = QFileDialog.getOpenFileNames(
-            parent, title, start, "Images (*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff)"
+            parent, title, start, f"{label} ({patterns})"
         )
         return paths
     path, _ = QFileDialog.getOpenFileName(
-        parent, title, start, "Images (*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff)"
+        parent, title, start, f"{label} ({patterns})"
     )
     return [path] if path else []
+
+
+def native_video_files(parent, title: str, start: str, multiple: bool = True) -> list[str]:
+    from video_core import VIDEO_EXTENSIONS
+    patterns = " ".join("*"+ext for ext in sorted(VIDEO_EXTENSIONS))
+    return native_image_files(parent, title, start, multiple, patterns+"|Videos")
 
 
 def native_directory(parent, title: str, start: str) -> str:
@@ -505,7 +486,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(930, 650)
         self.source_path: Path | None = None
         self.targets: list[Path] = []
-        self.worker: TaskWorker | None = None
+        self.worker: QThread | None = None
         self.face_choices: dict[str, int] = {}
         self._face_dialog = None
         self.last_output: Path | None = None
@@ -520,12 +501,24 @@ class MainWindow(QMainWindow):
         root.setSpacing(12)
 
         root.addLayout(self._build_header())
-        root.addWidget(self._build_workflow(), stretch=1)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_workflow(), "Photos")
+        from video_tab import VideoTab
+        self.video_tab = VideoTab(self, choose_files=native_video_files,
+            choose_directory=native_directory, open_path=native_open_path,
+            notify_folder=notify_output_folder, face_dialog=FaceSelectionDialog, image_view=ImageView)
+        self.video_scroll = QScrollArea()
+        self.video_scroll.setWidgetResizable(True)
+        self.video_scroll.setFrameShape(QFrame.NoFrame)
+        self.video_scroll.setWidget(self.video_tab)
+        self.tabs.addTab(self.video_scroll, "Video")
+        root.addWidget(self.tabs, stretch=1)
         root.addWidget(self._build_options())
         root.addLayout(self._build_actions())
         root.addWidget(self.progress)
         root.addWidget(self.log, stretch=0)
 
+        self.tabs.currentChanged.connect(self._mode_changed)
         self._apply_style()
         self._restore_state()
         self._restoring_state = False
@@ -545,7 +538,7 @@ class MainWindow(QMainWindow):
         brand_row.addWidget(version, alignment=Qt.AlignVCenter)
         brand_row.addStretch(1)
         titles.addLayout(brand_row)
-        subtitle = QLabel("One source face. A whole folder of photos. Private and offline.")
+        subtitle = QLabel("One source face. Photos and short videos. Private and offline.")
         subtitle.setObjectName("pageSub")
         titles.addWidget(subtitle)
         credit = QLabel('Made with <span style="color:#ff7a5c">♥</span> by Long Weekend Labs')
@@ -703,11 +696,12 @@ class MainWindow(QMainWindow):
     def _build_options(self):
         box = QGroupBox("3 — Output and quality")
         grid = QGridLayout(box)
+        self.options_grid = grid
         grid.setColumnStretch(1, 1)
         output_label = QLabel("Output folder")
         output_label.setObjectName("fieldLabel")
         self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText("Swapped photos are written here; originals are never changed")
+        self.output_edit.setPlaceholderText("Swapped files are written here; originals are never changed")
         self.output_edit.textChanged.connect(self._on_output_changed)
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._choose_output)
@@ -720,7 +714,7 @@ class MainWindow(QMainWindow):
         self.face_mode = QComboBox()
         self.face_mode.addItems(["Swap the largest face only", "Swap every detected face"])
         self.face_mode.currentIndexChanged.connect(self._save_state)
-        self.permission = QCheckBox("I have permission to modify the selected photos")
+        self.permission = QCheckBox("I have permission to modify the selected photos / videos")
         self.permission.stateChanged.connect(self._refresh_controls)
         grid.addWidget(faces_label, 1, 0)
         grid.addWidget(self.face_mode, 1, 1)
@@ -1217,7 +1211,7 @@ class MainWindow(QMainWindow):
             self.worker.stop()
             if self._face_dialog is not None:
                 self._face_dialog.reject()
-            self.status_label.setText("Stopping after this photo…")
+            self.status_label.setText("Stopping after this frame…" if self.tabs.currentIndex()==1 else "Stopping after this photo…")
 
     def _failed(self, message: str):
         self._set_running(False)
@@ -1249,8 +1243,21 @@ class MainWindow(QMainWindow):
         self.ask_face.setEnabled(not running)
         self.reset_faces_button.setEnabled(not running and bool(self.face_choices))
         self.face_mode.setEnabled(not running and not self.ask_face.isChecked())
+        self.tabs.tabBar().setEnabled(not running)
+        self.video_tab.set_busy(running)
         if not running:
             self._refresh_controls()
+
+    def _mode_changed(self, _index):
+        video_mode = self.tabs.currentIndex() == 1
+        self.options_grid.addWidget(self.permission, 5 if video_mode else 1, 2)
+        for widget in (self.preview_button, self.run_button):
+            widget.setVisible(not video_mode)
+        for row,column in ((1,0),(1,1),(2,0),(2,1),(2,2),(3,0),(3,1),(3,2),(4,2)):
+            item = self.options_grid.itemAtPosition(row,column)
+            if item and item.widget():
+                item.widget().setVisible(not video_mode)
+        self._refresh_controls()
 
     def _refresh_controls(self):
         running = bool(self.worker and self.worker.isRunning())
@@ -1266,15 +1273,23 @@ class MainWindow(QMainWindow):
         )
         self.preview_button.setEnabled(ready and self._selected_target() is not None)
         self.run_button.setEnabled(ready)
+        video_mode = self.tabs.currentIndex() == 1
+        self.quality_mode.setEnabled(not running and not video_mode)
+        self.output_format.setEnabled(not running and not video_mode)
+        self.ask_face.setEnabled(not running and not video_mode)
+        self.face_mode.setEnabled(not running and not video_mode and not self.ask_face.isChecked())
+        self.reset_faces_button.setEnabled(not running and not video_mode and self.ask_face.isChecked() and bool(self.face_choices))
         self.stop_button.setEnabled(running)
+        self.video_tab.set_busy(running)
 
     def _refresh_model_status(self):
+        status_engine = self.worker.engine if self.worker is not None else self.engine
         missing = core.missing_models()
         if missing:
             self.model_status.setText("↓ Download models · ~1.5 GB")
             self.model_status.setProperty("state", "warning")
             self.model_status.setToolTip("Missing: " + ", ".join(missing) + "\nClick to set up.")
-        elif self.engine.models_released:
+        elif status_engine.models_released:
             self.model_status.setText("● Offline · Idle")
             self.model_status.setProperty("state", "ready")
             self.model_status.setToolTip(
@@ -1282,8 +1297,8 @@ class MainWindow(QMainWindow):
                 "They reload automatically for the next preview or batch.\n"
                 + str(core.model_dir())
             )
-        elif self.engine.provider != "Not loaded":
-            self.model_status.setText(f"● Offline · {self.engine.provider}")
+        elif status_engine.provider != "Not loaded":
+            self.model_status.setText(f"● Offline · {status_engine.provider}")
             self.model_status.setProperty("state", "ready")
             self.model_status.setToolTip(str(core.model_dir()))
         else:
@@ -1340,7 +1355,7 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Swap still running",
-                "Stop after the current photo and close?",
+                "Stop after the current frame and close?" if self.tabs.currentIndex()==1 else "Stop after the current photo and close?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )

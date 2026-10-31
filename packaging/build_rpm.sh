@@ -104,6 +104,8 @@ cat > "$top/SPECS/swapio.spec" <<EOF
 %global _build_id_links none
 %global _binary_payload w3.zstdio
 AutoReqProv: no
+Requires: /usr/bin/ffmpeg
+Requires: /usr/bin/ffprobe
 
 Name:           swapio
 Version:        ${version}
