@@ -14,6 +14,8 @@ from typing import Callable, Iterable
 
 import cv2
 import numpy as np
+
+from source_models import SOURCE_MODELS
 from PIL import Image, ImageOps
 
 # InsightFace's augmentation dependency otherwise checks for updates on import.
@@ -27,7 +29,7 @@ ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 OCCLUDER_MODEL = "xseg_1.onnx"
 FACE_PARSER_MODEL = "bisenet_resnet_18.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 19
+PROCESSING_REVISION = 21
 # Require a clear gain before trading the detail model for the identity model.
 # Close scores keep the existing rendering rather than oscillating between models.
 MIN_IDENTITY_GAIN = 0.035
@@ -48,9 +50,13 @@ LEFT_EYE_106_INDICES = np.array([33, 35, 36, 37, 39, 40, 41, 42])
 RIGHT_EYE_106_INDICES = np.array([87, 89, 90, 91, 93, 94, 95, 96])
 # Face restoration works on its own FFHQ alignment, not the swapper's ArcFace one.
 ENHANCER_SIZE = 1024
-# How much of the restored crop replaces the swapped one. 0.8 repaints the face
-# hard enough to read as painted; the user controls this per batch.
-DEFAULT_RESTORATION_STRENGTH = 0.5
+# Reference eye-detail strength in source-guided modes. The API parameter keeps
+# its original name for callers using the older embedding-only renderer.
+DEFAULT_RESTORATION_STRENGTH = 1.0
+SOURCE_FACE_TEMPLATE = np.array([
+    [.36167656, .40387734], [.63696719, .40235469],
+    [.50019687, .56044219], [.38710391, .72160547], [.61507734, .72034453],
+], np.float32)
 FFHQ_TEMPLATE = np.array(
     [
         [0.37691676, 0.46864664],
@@ -99,6 +105,7 @@ def model_dir() -> Path:
         and (bundled / ENHANCER_MODEL).is_file()
         and (bundled / OCCLUDER_MODEL).is_file()
         and (bundled / FACE_PARSER_MODEL).is_file()
+        and all((bundled / spec[0]).is_file() for spec in SOURCE_MODELS.values())
     )
     # A source checkout deliberately keeps its models beside the code. A
     # packaged public build may contain only an empty placeholder; never try
@@ -126,6 +133,9 @@ def missing_models(root: Path | None = None) -> list[str]:
         missing.append(OCCLUDER_MODEL)
     if not (root / FACE_PARSER_MODEL).is_file():
         missing.append(FACE_PARSER_MODEL)
+    for filename, _size, _digest in SOURCE_MODELS.values():
+        if not (root / filename).is_file():
+            missing.append(filename)
     return missing
 
 
@@ -367,9 +377,13 @@ class SwapEngine:
         self.accelerated_providers = ["CPUExecutionProvider"]
         self.enhancer_cpu_only = False
         self.provider = "Not loaded"
+        self.reference_image = None
+        self.reference_face = None
+        self.source_renderer = None
+        self.active_backend = "legacy"
 
     def ensure_loaded(self, on_log: LogFn = _noop) -> None:
-        if self.analyser is not None and self.swapper is not None and self.hyperswap is not None:
+        if self.analyser is not None:
             return
         missing = missing_models(self.models)
         if missing:
@@ -380,7 +394,6 @@ class SwapEngine:
             )
 
         import onnxruntime as ort
-        from insightface import model_zoo
         from insightface.app import FaceAnalysis
 
         available = ort.get_available_providers()
@@ -400,37 +413,17 @@ class SwapEngine:
             providers=providers,
         )
         analyser.prepare(ctx_id=0 if want_cuda else -1, det_size=(self.det_size, self.det_size))
-        swapper = model_zoo.get_model(str(self.models / SWAPPER_MODEL), providers=providers)
-        # cuDNN's exhaustive search produced non-finite fp16 pixels on the tested
-        # GTX 1660 Ti. Conservative algorithms are valid on the real model; retain
-        # a checked CPU fallback for cards/inputs that still cannot run it.
-        quality_providers = (
-            [("CUDAExecutionProvider", HYPERSWAP_CUDA_OPTIONS), "CPUExecutionProvider"]
-            if want_cuda and not self.hyperswap_cpu_only else ["CPUExecutionProvider"]
-        )
-        hyperswap = ort.InferenceSession(
-            str(self.models / HYPERSWAP_MODEL), providers=quality_providers,
-        )
         self.analyser = analyser
-        self.swapper = swapper
-        self.hyperswap = hyperswap
         self._refresh_provider()
         analyser_sessions = [
             getattr(model, "session", None) for model in analyser.models.values()
         ]
-        accelerated_sessions = analyser_sessions + [getattr(swapper, "session", None)]
         actual_cuda = any(
             session is not None and "CUDAExecutionProvider" in session.get_providers()
-            for session in accelerated_sessions
+            for session in analyser_sessions
         )
-        quality_cuda = hyperswap.get_providers()[0] == "CUDAExecutionProvider"
-        if actual_cuda or quality_cuda:
-            if actual_cuda and quality_cuda:
-                on_log("CUDA accelerates detection, identity and quality swaps.")
-            elif actual_cuda:
-                on_log("CUDA accelerates detection and identity swaps; the detail model uses CPU.")
-            else:
-                on_log("CUDA accelerates quality swaps; detection and identity use CPU.")
+        if actual_cuda:
+            on_log("CUDA accelerates face analysis; rendering models load when needed.")
         elif want_cuda:
             on_log("CUDA runtime was found but could not start; using CPU safely.")
         elif self.use_gpu:
@@ -440,15 +433,158 @@ class SwapEngine:
     def _refresh_provider(self):
         models = (getattr(self.analyser, "models", None) or {}).values()
         sessions = [getattr(model, "session", None) for model in models]
-        sessions.append(getattr(self.swapper, "session", None))
-        accelerated = any(session is not None and "CUDAExecutionProvider" in session.get_providers()
-                          for session in sessions)
-        quality_cuda = (self.hyperswap is not None
-                        and self.hyperswap.get_providers()[0] == "CUDAExecutionProvider")
-        if quality_cuda:
-            self.provider = "CUDA" if accelerated else "CUDA detail · CPU detection/identity"
+        if self.active_backend == "source" and self.source_renderer is not None:
+            sessions.extend(session for name, session in self.source_renderer.sessions.items()
+                            if name in ("appearance", "motion", "generator"))
         else:
-            self.provider = "CUDA detection/identity · CPU detail" if accelerated else "CPU"
+            sessions.extend([getattr(self.swapper, "session", None), self.hyperswap, self.enhancer])
+        providers = [session.get_providers()[0] for session in sessions if session is not None]
+        cuda = providers.count("CUDAExecutionProvider")
+        if cuda and cuda == len(providers):
+            self.provider = "CUDA"
+        elif cuda:
+            self.provider = "CUDA + CPU"
+        else:
+            self.provider = "CPU"
+
+    def _ensure_swapper(self, on_log: LogFn = _noop):
+        if self.swapper is None:
+            from insightface import model_zoo
+            self.swapper = model_zoo.get_model(str(self.models / SWAPPER_MODEL),
+                                               providers=self.accelerated_providers)
+            self._refresh_provider()
+        return self.swapper
+
+    def _activate_backend(self, backend):
+        if backend != self.active_backend:
+            # A six-GB card cannot keep both families of generators resident.
+            # Keep cached source pixels/features, release inactive ORT arenas.
+            if backend == "source":
+                self.swapper = self.hyperswap = self.enhancer = None
+            elif self.source_renderer is not None:
+                self.source_renderer.sessions.clear()
+            self.active_backend = backend
+            self._refresh_provider()
+
+    @staticmethod
+    def _map_face(face, matrix):
+        mapped = type(face)(deepcopy(dict(face))) if isinstance(face, dict) else deepcopy(face)
+        for name in ("kps", "landmark_2d_106"):
+            points = getattr(face, name, None)
+            if points is not None:
+                setattr(mapped, name, cv2.transform(np.asarray(points, np.float32)[None], matrix)[0])
+        box = np.asarray(face.bbox, np.float32)
+        corners = np.array([[box[0], box[1]], [box[2], box[1]],
+                            [box[2], box[3]], [box[0], box[3]]], np.float32)
+        corners = cv2.transform(corners[None], matrix)[0]
+        mapped.bbox = np.r_[corners.min(0), corners.max(0)]
+        return mapped
+
+    @staticmethod
+    def _reliable_keypoints(face):
+        points = np.asarray(getattr(face, "kps", None), np.float32)
+        box = np.asarray(getattr(face, "bbox", None), np.float32)
+        if points.shape != (5, 2) or box.shape != (4,) or not np.isfinite(points).all():
+            return False
+        margin = (box[2:] - box[:2]) * .15
+        if not (np.all(points >= box[:2] - margin) and np.all(points <= box[2:] + margin)):
+            return False
+        # An upside-down detector can put every point inside the box while
+        # mistaking cheeks for eyes. Bounds and confidence alone miss this.
+        matrix, _ = cv2.estimateAffinePartial2D(
+            points, SOURCE_FACE_TEMPLATE * 512, method=cv2.RANSAC, ransacReprojThreshold=100)
+        if matrix is None or not np.isfinite(matrix).all():
+            return False
+        fitted = cv2.transform(points[None], matrix)[0]
+        return bool(np.max(np.linalg.norm(fitted - SOURCE_FACE_TEMPLATE * 512, axis=1)) <= 512 * .12)
+
+    def detect_faces(self, image, on_log: LogFn = _noop):
+        """Re-detect rolled heads upright before trusting their facial landmarks."""
+        def upright_keypoints(face):
+            if not self._reliable_keypoints(face):
+                return False
+            delta = face.kps[1] - face.kps[0]
+            return abs(float(np.degrees(np.arctan2(delta[1], delta[0])))) <= 45
+
+        faces = self.analyser.get(image)
+        if not (getattr(self.analyser, "models", None) or {}).get("detection"):
+            return faces
+        if not faces:
+            # No crop is available. Quarter-turn recovery is bounded to three
+            # additional detector calls and never modifies the original image.
+            height, width = image.shape[:2]
+            for angle in (90, 180, 270):
+                scale = min(2048 / max(height, width), 1)
+                side = round(max(height, width) * scale)
+                matrix = cv2.getRotationMatrix2D((width / 2, height / 2), angle, scale)
+                matrix[:, 2] += np.array([side / 2 - width / 2, side / 2 - height / 2])
+                upright = cv2.warpAffine(image, matrix, (side, side))
+                recovered = [face for face in self.analyser.get(upright) if upright_keypoints(face)]
+                if recovered:
+                    on_log("Recovered face detection in an upright analysis frame.")
+                    inverse = cv2.invertAffineTransform(matrix)
+                    return [self._map_face(face, inverse) for face in recovered]
+            return []
+        corrected = []
+        for face in faces:
+            points = np.asarray(getattr(face, "kps", None), np.float32)
+            if points.shape != (5, 2) or not np.isfinite(points).all():
+                raise RuntimeError("Face landmarks are invalid; result was not saved.")
+            delta = points[1] - points[0]
+            angle = float(np.degrees(np.arctan2(delta[1], delta[0])))
+            if abs(angle) <= 30 and self._reliable_keypoints(face):
+                corrected.append(face)
+                continue
+            box = np.asarray(face.bbox, np.float32)
+            centre = (box[:2] + box[2:]) / 2
+            span = float(max(box[2:] - box[:2]) * 2)
+            if not np.isfinite(box).all() or span <= 0:
+                raise RuntimeError("Face bounds are invalid; result was not saved.")
+            side = int(np.clip(np.ceil(span), 256, 1024))
+            candidates = []
+            for offset in (0, 90, 180, 270):
+                matrix = cv2.getRotationMatrix2D(tuple(map(float, centre)), angle + offset, side / span)
+                matrix[:, 2] += side / 2 - centre
+                roi = cv2.warpAffine(image, matrix, (side, side), borderMode=cv2.BORDER_REPLICATE)
+                candidates = [candidate for candidate in self.analyser.get(roi)
+                              if upright_keypoints(candidate)
+                              and np.linalg.norm((candidate.bbox[:2] + candidate.bbox[2:]) / 2 - side / 2) < side * .25]
+                if candidates:
+                    nearest = min(candidates, key=lambda candidate: np.linalg.norm(
+                        (candidate.bbox[:2] + candidate.bbox[2:]) / 2 - side / 2))
+                    delta = nearest.kps[1] - nearest.kps[0]
+                    residual_roll = float(np.degrees(np.arctan2(delta[1], delta[0])))
+                    if abs(residual_roll) > 15:
+                        # The initial roll estimate may itself be wrong. Refine
+                        # the upright candidate from original pixels, avoiding
+                        # the inaccurate sideways detector's enlarged features.
+                        matrix = cv2.getRotationMatrix2D(tuple(map(float, centre)),
+                            angle + offset + residual_roll, side / span)
+                        matrix[:, 2] += side / 2 - centre
+                        roi = cv2.warpAffine(image, matrix, (side, side), borderMode=cv2.BORDER_REPLICATE)
+                        candidates = [candidate for candidate in self.analyser.get(roi)
+                                      if upright_keypoints(candidate)
+                                      and np.linalg.norm((candidate.bbox[:2] + candidate.bbox[2:]) / 2 - side / 2) < side * .25]
+                    if not candidates:
+                        continue
+                    break
+            if not candidates:
+                raise RuntimeError("Could not establish reliable landmarks for the rotated face; result was not saved.")
+            best = min(candidates, key=lambda candidate: np.linalg.norm(
+                (candidate.bbox[:2] + candidate.bbox[2:]) / 2 - side / 2))
+            corrected.append(self._map_face(best, cv2.invertAffineTransform(matrix)))
+            on_log("Refined rotated-face landmarks in an upright analysis frame.")
+        return corrected
+
+    def _ensure_hyperswap(self, on_log: LogFn = _noop):
+        if self.hyperswap is None:
+            import onnxruntime as ort
+            cuda = "CUDAExecutionProvider" in self.accelerated_providers and not self.hyperswap_cpu_only
+            providers = ([("CUDAExecutionProvider", HYPERSWAP_CUDA_OPTIONS), "CPUExecutionProvider"]
+                         if cuda else ["CPUExecutionProvider"])
+            self.hyperswap = ort.InferenceSession(str(self.models / HYPERSWAP_MODEL), providers=providers)
+            self._refresh_provider()
+        return self.hyperswap
 
     def _ensure_enhancer(self, on_log: LogFn = _noop):
         """Load the face restoration model the first time Best quality runs."""
@@ -522,6 +658,39 @@ class SwapEngine:
         landmarks = cv2.transform(points[None], matrix)[0]
         return self._expression_mask_from_labels(labels, landmarks, visibility, matrix)
 
+    def _source_mouth_visibility(self, original, face, visibility):
+        return self._source_mouth_context(original, face, visibility)[0]
+
+    def _source_mouth_context(self, original, face, visibility):
+        """Allow source mouth interiors where XSeg mistakes a cavity for background."""
+        points = getattr(face, "landmark_2d_106", None)
+        if points is None or np.asarray(points).shape != (106, 2) or not np.isfinite(points).all():
+            return visibility, None, False
+        parsed = self._parse_face(original, face)
+        if parsed is None:
+            return visibility, None, False
+        _, labels, matrix = parsed
+        points = cv2.transform(np.asarray(points, np.float32)[None], matrix)[0]
+        # Full-expression protection means an object, extended tongue or hidden
+        # lip rim. Do not recover dark cavity pixels around those obstructions.
+        protection = self._expression_mask_from_labels(labels, points, visibility, matrix)
+        if protection is not None:
+            return visibility, protection, False
+        outer = np.zeros(labels.shape, np.uint8)
+        cv2.fillConvexPoly(outer, cv2.convexHull(np.rint(points[52:72]).astype(np.int32)), 1)
+        lips = np.isin(labels, (12, 13)) & (outer > 0)
+        aligned = cv2.warpAffine(visibility, matrix, labels.shape[::-1])
+        if lips.sum() < 12 or float(aligned[lips].mean()) < .85:
+            return visibility, None, False
+        cavity = np.zeros(labels.shape, np.uint8)
+        cv2.fillConvexPoly(cavity, cv2.convexHull(
+            np.rint(points[INNER_MOUTH_106_INDICES]).astype(np.int32)), 1)
+        cavity = ((cavity > 0) & (labels == 11)).astype(np.float32)
+        if cavity.sum() < 12:
+            return visibility, None, True
+        allowed = cv2.warpAffine(cavity, cv2.invertAffineTransform(matrix), visibility.shape[::-1])
+        return np.maximum(visibility, allowed), None, True
+
     def _parse_face(self, image, face, matrix=None):
         """Parse the aligned face for expression protection."""
         import onnxruntime as ort
@@ -570,12 +739,14 @@ class SwapEngine:
         area = int(selected.sum())
         if area < 12 or area > labels.size * 0.2:
             return None
-        # Closed, unobstructed lips retain generated identity. Open mouths and
-        # foreground objects at the lips need complete expression protection.
-        inner_area = int(np.count_nonzero((labels == 11) & (selected > 0)))
+        # A dark oral cavity is not a foreground obstruction. Inspect the lip
+        # rim separately so ordinary open mouths retain the source's lips.
+        # An extended tongue or object still needs complete contour protection.
         aligned_visibility = cv2.warpAffine(visibility, matrix, labels.shape[::-1])
-        visible = float(aligned_visibility[seed > 0].mean()) if np.any(seed) else 1.0
-        if inner_area < max(12, width * width * 0.012) and visible >= 0.85:
+        lips = np.isin(labels, (12, 13)) & (selected > 0)
+        visible = float(aligned_visibility[lips].mean()) if lips.sum() >= 12 else 0
+        protruding = int(np.count_nonzero((selected > 0) & (seed == 0)))
+        if visible >= .85 and protruding < max(12, width * width * .015):
             return None
         full = cv2.warpAffine(selected, cv2.invertAffineTransform(matrix),
                               visibility.shape[::-1], flags=cv2.INTER_NEAREST)
@@ -791,9 +962,10 @@ class SwapEngine:
         image = load_image(source_path)
         if image is None:
             raise RuntimeError(f"Could not read source image: {source_path}")
-        face = _largest_face(self.analyser.get(image))
+        face = _largest_face(self.detect_faces(image, on_log))
         if face is None:
             raise RuntimeError("No face was detected in the source photo.")
+        self.reference_image, self.reference_face = image, face
         return image, face
 
     def source_face(self, source_path: Path | str, on_log: LogFn = _noop):
@@ -897,6 +1069,8 @@ class SwapEngine:
                        on_log: LogFn = _noop):
         from insightface.utils import face_align
 
+        self._ensure_hyperswap(on_log)
+
         model_size = 256
         # norm_crop2 resamples bilinearly. The aligned crop is usually an upscale
         # of the face region, and bilinear softens exactly the eyelash, lid and
@@ -928,6 +1102,8 @@ class SwapEngine:
     def _inswapper_face(self, target, target_face, source_face, boost_size):
         """Sample the identity model on one grid, using our shared face composite."""
         from insightface.utils import face_align
+
+        self._ensure_swapper()
 
         model_size = 128
         matrix = face_align.estimate_norm(target_face.kps, boost_size)
@@ -1293,7 +1469,7 @@ class SwapEngine:
         target_face_index: int | None = None,
         detected_faces: list | None = None,
     ):
-        faces = sorted(self.analyser.get(target) if detected_faces is None else detected_faces,
+        faces = sorted(self.detect_faces(target, on_log) if detected_faces is None else detected_faces,
                        key=_face_area, reverse=True)
         if not faces:
             raise RuntimeError("No destination face detected")
@@ -1305,18 +1481,28 @@ class SwapEngine:
         else:
             selected = faces if all_faces else faces[:1]
         result = target.copy()
+        source_guided = (quality in BOOSTED_QUALITIES and source_face is self.reference_face
+                         and self.reference_image is not None)
+        self._activate_backend("source" if source_guided else "legacy")
+        if source_guided and self.source_renderer is None:
+            from source_render import SourceRenderer
+            self.source_renderer = SourceRenderer(self)
         for face in selected:
             previous = result.copy()
             visibility = self._visible_face_mask(target, face)
-            mouth_protection = self._mouth_expression_mask(target, face, visibility) if preserve_mouth else None
-
+            if source_guided:
+                visibility, protection, mouth_unobstructed = self._source_mouth_context(target, face, visibility)
+                mouth_protection = protection if preserve_mouth else None
+            else:
+                mouth_protection = self._mouth_expression_mask(target, face, visibility) if preserve_mouth else None
+            feature_frame = self._eye_landmark_frame(target, face)
             def finish(rendered, identity_selected):
-                if quality == "best":
+                if quality == "best" and not source_guided:
                     rendered = self._restore_face(rendered, face, restoration_strength, on_log, target)
-                elif quality == "careful" and not identity_selected:
+                elif quality == "careful" and not identity_selected and not source_guided:
                     rendered = self._adaptive_eye_detail(rendered, target, face, restoration_strength, on_log)
                 if destination_eyes or (preserve_mouth and mouth_protection is None):
-                    placed_face = self._landmarks_after_swap(rendered, face)
+                    placed_face = self._eye_landmarks(rendered, face, feature_frame)
                     if placed_face is None:
                         on_log("Feature preservation skipped: final landmarks unavailable.")
                     if destination_eyes:
@@ -1324,15 +1510,23 @@ class SwapEngine:
                     if preserve_mouth and mouth_protection is None:
                         rendered = self._preserve_inner_mouth(rendered, target, face, placed_face)
                 if mouth_protection is not None:
-                    placed_face = self._landmarks_after_swap(rendered, face)
+                    placed_face = self._eye_landmarks(rendered, face, feature_frame)
                     protection = self._complete_mouth_protection(mouth_protection, face, placed_face)
                     rendered = self._apply_visibility(rendered, target, 1.0 - protection)
                     on_log("Protected the target's open/obstructed mouth expression, including lips and tongue.")
                 # Foreground goes last, preserving prior swapped faces too.
                 return self._apply_visibility(rendered, previous, visibility)
 
-            if quality == "fast":
-                result = finish(self.swapper.get(result, face, source_face, paste_back=True), False)
+            if source_guided:
+                rendered = self.source_renderer.render(
+                    target, result, face, self.reference_image, source_face,
+                    quality, 0.0 if destination_eyes else restoration_strength, visibility, on_log,
+                    reference_mouth=not preserve_mouth,
+                    mouth_unobstructed=mouth_unobstructed,
+                )
+                result = finish(rendered, False)
+            elif quality == "fast":
+                result = finish(self._ensure_swapper(on_log).get(result, face, source_face, paste_back=True), False)
             else:
                 boost_size = self._boost_size_for_face(target, face, quality)
                 if boost_size > 512:
@@ -1349,7 +1543,7 @@ class SwapEngine:
     def _target_face_choice(self, target, target_path, face_selector):
         if face_selector is None:
             return None, None
-        faces = sorted(self.analyser.get(target), key=_face_area, reverse=True)
+        faces = sorted(self.detect_faces(target), key=_face_area, reverse=True)
         if not faces:
             raise RuntimeError("No destination face detected")
         choice = 0 if len(faces) == 1 else face_selector(Path(target_path), target, faces)
@@ -1449,8 +1643,8 @@ class SwapEngine:
         cancelled = False
         batch_date_tag = datetime.now().strftime("%d%m%Y-%H%M%S")
         detail = {
-            "best": "Best source-likeness comparison with face restoration",
-            "careful": "Careful source-likeness comparison and detail recovery",
+            "best": "Source-guided face with up to three measured generation passes",
+            "careful": "Source-guided face with up to two measured generation passes",
             "balanced": "Balanced 256px",
             "fast": "Fast 128px",
         }.get(quality, quality)

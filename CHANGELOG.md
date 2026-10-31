@@ -4,13 +4,17 @@
 
 ### Fixed
 
-- Recover generated eye texture at smaller sizes too, and reuse restoration detail in Careful and Best instead of leaving blurred lids in partially restored faces.
-- Target-eye preservation now includes eyelids and lashes instead of keeping sharp eyeballs inside blurred generated lids.
+- Careful and Best now carry the source portrait's appearance into the target pose and expression, then project actual reference eye detail instead of relying on a small identity-only swap followed by restoration.
+- Add measured eye and mouth refinement: Careful allows up to two generation passes and Best up to three. A correction is retained only when opening measurements improve without degrading the other feature.
+- Replace whole-face restoration in these modes with a reference eye-detail control, defaulting to full source detail. Closed eyes stay closed; iris projection avoids stretching pupils when adjusting eyelids.
+- Ordinary open-mouth protection now recovers inner-mouth detail while retaining generated source lips. Turning it off replaces dark oral cavities too, with actual reference upper-tooth detail when the visible rows and pose permit. Tongues and objects still receive foreground protection.
+- Re-detect rotated faces upright before trusting their landmarks, and reject unreliable alignments instead of exporting misplaced eyes.
+- Target-eye preservation remains optional and includes eyelids and lashes. Source-guided rendering works with this option off.
 - Restore CUDA quality swapping with conservative GPU kernel settings and a checked CPU retry for invalid output or GPU failures.
+- Release inactive generators when switching between draft and source-guided modes to avoid wasting GPU memory.
 - Pin the face-analysis library to the compatible release so CUDA installations do not also pull in a conflicting CPU runtime.
 - Prepare inference-library imports before Qt to avoid slow first-preview imports in the worker thread.
-- For smaller faces, Careful and Best compare both local face models against the source portrait, selecting a stronger replacement when the finished result gives a clear likeness gain. Larger faces and similar matches keep the existing detailed result.
-- Careful restores detail in stronger replacements with a bounded strength and checks that restoration retains the likeness gain. The restoration slider still disables or limits this pass.
+- Verify the additional source-rendering models by exact size and SHA-256, reusing compatible local files before downloading them.
 - Reprocess unchanged batches after this face-processing change instead of skipping previous outputs.
 
 ## [0.5.0] - 2026-10-14

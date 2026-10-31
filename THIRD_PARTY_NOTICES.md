@@ -13,6 +13,12 @@ its owner's terms:
   the published pretrained models are stated to be for non-commercial research use.
 - **HyperSwap 1B 256**: published under ResearchRAIL.
 - **GPEN-BFR 1024** (face restoration): research and non-commercial terms.
+- **LivePortrait** (source appearance, motion, generation and eye/lip retargeting):
+  Copyright (c) 2024 Kuaishou Visual Generation and Interaction Center. Published
+  under the [upstream MIT licence](https://github.com/KlingAIResearch/LivePortrait/blob/main/LICENSE).
+  ONNX conversions are downloaded separately from
+  [FaceFusion assets](https://github.com/facefusion/facefusion-assets/releases/tag/models-3.0.0).
+  Swapio still uses the separately restricted InsightFace models listed above.
 - **BiSeNet ResNet18** (mouth expression parsing): downloaded separately from
   [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing), under its MIT licence.
 - **XSeg 1** (occlusion protection): DeepFaceLab model, distributed separately

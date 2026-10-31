@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 import core
 import setup_models
+from source_models import SOURCE_COMPONENT, SOURCE_MODELS
 
 COMPONENTS = (
     "Face detector, mouth landmarks and identity encoder",
@@ -24,6 +25,7 @@ COMPONENTS = (
     "Face restoration",
     "Face occlusion protection",
     "Mouth expression protection",
+    SOURCE_COMPONENT,
 )
 
 
@@ -89,7 +91,7 @@ class ModelSetupDialog(QDialog):
         layout.addWidget(title)
 
         explanation = QLabel(
-            "Swapio needs approximately 1.5 GB of pretrained models. They are "
+            "Swapio needs approximately 1.8 GB of pretrained models. They are "
             "downloaded once from model publishers, verified, and then "
             "used completely offline. Existing verified files are skipped."
         )
@@ -105,6 +107,7 @@ class ModelSetupDialog(QDialog):
         for component in COMPONENTS:
             label = QLabel(f"○  {component} — waiting")
             label.setObjectName("modelComponent")
+            label.setWordWrap(True)
             self.labels[component] = label
             layout.addWidget(label)
 
@@ -151,6 +154,7 @@ class ModelSetupDialog(QDialog):
             "Face restoration": {core.ENHANCER_MODEL},
             "Face occlusion protection": {core.OCCLUDER_MODEL},
             "Mouth expression protection": {core.FACE_PARSER_MODEL},
+            SOURCE_COMPONENT: {spec[0] for spec in SOURCE_MODELS.values()},
         }
         for component, files in mapping.items():
             ready = not bool(files & missing)
