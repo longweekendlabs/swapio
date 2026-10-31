@@ -28,7 +28,7 @@ ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 OCCLUDER_MODEL = "xseg_1.onnx"
 FACE_PARSER_MODEL = "bisenet_resnet_18.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 23
+PROCESSING_REVISION = 24
 # Require a clear gain before trading the detail model for the identity model.
 # Close scores keep the existing rendering rather than oscillating between models.
 MIN_IDENTITY_GAIN = 0.035
@@ -558,6 +558,42 @@ class SwapEngine:
         protection *= np.clip(away / 5, 0, 1)
         return cv2.warpAffine(protection, cv2.invertAffineTransform(matrix), shape[1::-1])
 
+    @staticmethod
+    def _forehead_protection(original_labels, generated_labels, matrix, face, shape):
+        """Keep a continuous forehead above the brows, rather than isolated hair patches."""
+        points = np.asarray(getattr(face, "landmark_2d_106", None), np.float32)
+        kps = np.asarray(getattr(face, "kps", None), np.float32)
+        if (points.shape != (106, 2) or kps.shape != (5, 2)
+                or not np.isfinite(points).all() or not np.isfinite(kps).all()):
+            return None
+        aligned = cv2.transform(points[None], matrix)[0]
+        eyes = cv2.transform(kps[None], matrix)[0][:2]
+        span = float(np.linalg.norm(eyes[0] - eyes[1]))
+        anchors = sorted((float(np.median(brow[:, 0])), float(brow[:, 1].min()))
+                         for brow in (aligned[43:52], aligned[97:106]))
+        if span < 4 or anchors[1][0] - anchors[0][0] < span * 0.25:
+            return None
+        yy, xx = np.indices(original_labels.shape, dtype=np.float32)
+        brow_line = np.interp(xx, [point[0] for point in anchors],
+                              [point[1] for point in anchors])
+        # Keep the whole forehead opaque down to brow level, including skin
+        # mislabelled as hair. Fading higher leaves dark model texture mixed
+        # into bare skin. The fade continues at the temples; the feature guards
+        # below exclude actual eyebrows and eyes from the correction.
+        protection = np.clip((brow_line + span * 0.30 - yy) / (span * 0.25), 0, 1)
+        protection = protection * protection * (3 - 2 * protection)
+        head = np.isin(original_labels, tuple(range(1, 14)) + (17, 18)).astype(np.uint8)
+        head = cv2.dilate(head, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+        protection *= head
+        # Generated brows can sit higher than the destination's measured brows.
+        # Preserve both sets of features, including their antialiased edges.
+        features = (np.isin(original_labels, (2, 3, 4, 5, 6, 10, 11, 12, 13))
+                    | np.isin(generated_labels, (2, 3, 4, 5, 6, 10, 11, 12, 13)))
+        away = cv2.distanceTransform(1 - features.astype(np.uint8), cv2.DIST_L2, 5)
+        protection *= np.clip(away / 5, 0, 1)
+        return cv2.warpAffine(protection.astype(np.float32),
+                              cv2.invertAffineTransform(matrix), shape[1::-1])
+
     def _protect_hairline(self, rendered, original, face, on_log=_noop):
         kps = np.asarray(getattr(face, "kps", None), np.float32)
         if kps.shape != (5, 2) or not np.isfinite(kps).all():
@@ -569,6 +605,9 @@ class SwapEngine:
         if after is None:
             return rendered
         protection = self._hairline_protection(before[1], after[1], before[2], original.shape)
+        forehead = self._forehead_protection(before[1], after[1], before[2], face, original.shape)
+        if forehead is not None:
+            protection = forehead if protection is None else np.maximum(protection, forehead)
         points = np.asarray(getattr(face, "landmark_2d_106", None), np.float32)
         if protection is not None and points.shape == (106, 2) and np.isfinite(points).all():
             # Also protect the measured central features when the parser misses

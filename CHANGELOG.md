@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-10-31
+
+### Fixed
+
+- Preserve a continuous destination forehead with a smooth transition around the temples, preserving generated brows. Restoring isolated skin patches over invented hair could leave curved dark borders and mismatched patches.
+- Reprocess previous outputs after the forehead-compositing correction.
+
 ## [0.5.9] - 2026-10-31
 
 ### Fixed

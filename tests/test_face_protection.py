@@ -11,6 +11,48 @@ import setup_models
 
 
 class FaceProtectionTests(unittest.TestCase):
+    def test_forehead_mask_covers_bare_skin_between_hair_patches_and_spares_high_generated_brows(self):
+        points = np.zeros((106, 2), np.float32)
+        points[43:52] = np.column_stack((np.linspace(160, 220, 9), np.full(9, 200)))
+        points[97:106] = np.column_stack((np.linspace(290, 350, 9), np.full(9, 200)))
+        face = SimpleNamespace(landmark_2d_106=points,
+                               kps=np.array([[190, 240], [320, 240], [255, 290],
+                                             [220, 340], [290, 340]], np.float32))
+        before = np.ones((512, 512), np.uint8)
+        before[:60] = 17
+        after = before.copy()
+        after[65:95, 160:220] = 17
+        after[155:165, 165:215] = 2  # generated eyebrow above target brow
+        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
+        mask = core.SwapEngine._forehead_protection(before, after, identity, face, (512, 512, 3))
+        np.testing.assert_array_equal(mask[60:110, 140:360], 1)
+        np.testing.assert_array_equal(mask[175:190, 240:280], 1)
+        self.assertEqual(float(mask[160, 190]), 0)
+        np.testing.assert_array_equal(mask[250:], 0)
+        # A skin label between invented hair islands must receive the same
+        # protection; otherwise restoring islands leaves a false curved seam.
+        self.assertEqual(float(mask[80, 240]), float(mask[80, 190]))
+
+    def test_forehead_mask_requires_valid_landmarks_and_follows_alignment(self):
+        labels = np.ones((512, 512), np.uint8)
+        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
+        self.assertIsNone(core.SwapEngine._forehead_protection(
+            labels, labels, identity, SimpleNamespace(), (600, 600, 3)))
+        points = np.zeros((106, 2), np.float32)
+        points[43:52] = [190, 200]
+        points[97:106] = [320, 200]
+        face = SimpleNamespace(landmark_2d_106=points,
+                               kps=np.array([[190, 240], [320, 240], [255, 290],
+                                             [220, 340], [290, 340]], np.float32))
+        base = core.SwapEngine._forehead_protection(labels, labels, identity, face, (600, 600, 3))
+        # Translate input coordinates with the face while keeping its aligned
+        # crop fixed; protection must translate back to the image as well.
+        face.landmark_2d_106 += [60, 70]
+        face.kps += [60, 70]
+        matrix = np.array([[1, 0, -60], [0, 1, -70]], np.float32)
+        moved = core.SwapEngine._forehead_protection(labels, labels, matrix, face, (600, 600, 3))
+        np.testing.assert_array_equal(moved[70:582, 60:572], base[:512, :512])
+
     def test_hairline_protection_removes_invented_hair_without_replacing_brows_or_face(self):
         original = np.full((512, 512, 3), 160, np.uint8)
         original[:80] = 20
