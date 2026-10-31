@@ -464,15 +464,14 @@ class TaskWorker(QThread):
         return self._choice
 
     def run(self):
+        outcome, payload = self.cancelled, ()
         try:
             if self.ask_face:
                 self.kwargs["face_selector"] = self._select_face
             if self.mode == "preview":
                 result = self.engine.preview(on_log=self.log.emit, **self.kwargs)
-                if self._stop:
-                    self.cancelled.emit()
-                else:
-                    self.preview_ready.emit(result)
+                if not self._stop:
+                    outcome, payload = self.preview_ready, (result,)
             else:
                 result = self.engine.batch(
                     on_log=self.log.emit,
@@ -480,11 +479,20 @@ class TaskWorker(QThread):
                     should_stop=lambda: self._stop,
                     **self.kwargs,
                 )
-                self.batch_ready.emit(result)
+                outcome, payload = self.batch_ready, (result,)
         except (core.FaceSelectionSkipped, core.ProcessingCancelled):
-            self.cancelled.emit()
+            pass
         except Exception as exc:
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            outcome, payload = self.failed, (f"{type(exc).__name__}: {exc}",)
+        finally:
+            try:
+                if self.engine.release_models():
+                    self.log.emit("Processing models unloaded; memory released for other apps.")
+            except Exception as exc:
+                self.log.emit(f"Could not unload processing models: {type(exc).__name__}: {exc}")
+        # Completion dialogs and enabled controls must follow device cleanup.
+        # Payloads contain CPU pixels/metadata, so the preview remains available.
+        outcome.emit(*payload)
 
 
 class MainWindow(QMainWindow):
@@ -1029,6 +1037,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.progress.setFormat("Preview cancelled")
         self.status_label.setText("Preview cancelled")
+        self._refresh_model_status()
 
     def _restoration_changed(self, value: int) -> None:
         self.restoration_value.setText(f"{value}%" if value else "off")
@@ -1217,6 +1226,7 @@ class MainWindow(QMainWindow):
         self.progress.setFormat("Error")
         self.status_label.setText("Error")
         self.log.appendPlainText("ERROR: " + message)
+        self._refresh_model_status()
         QMessageBox.critical(self, "Swapio error", message)
 
     def _open_output(self):
@@ -1229,6 +1239,9 @@ class MainWindow(QMainWindow):
                 )
 
     def _set_running(self, running: bool):
+        if running:
+            self.model_status.setText("● Offline · Processing")
+            self.model_status.setToolTip("Processing models stay loaded for this job and unload when it finishes.")
         self.preview_button.setEnabled(not running)
         self.run_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
@@ -1261,6 +1274,14 @@ class MainWindow(QMainWindow):
             self.model_status.setText("↓ Download models · ~1.5 GB")
             self.model_status.setProperty("state", "warning")
             self.model_status.setToolTip("Missing: " + ", ".join(missing) + "\nClick to set up.")
+        elif self.engine.models_released:
+            self.model_status.setText("● Offline · Idle")
+            self.model_status.setProperty("state", "ready")
+            self.model_status.setToolTip(
+                "Processing models are unloaded between jobs to release memory.\n"
+                "They reload automatically for the next preview or batch.\n"
+                + str(core.model_dir())
+            )
         elif self.engine.provider != "Not loaded":
             self.model_status.setText(f"● Offline · {self.engine.provider}")
             self.model_status.setProperty("state", "ready")
@@ -1439,7 +1460,7 @@ def main():
     if "--self-test-swap" in sys.argv:
         from package_diagnostics import self_test_swap
 
-        sys.exit(self_test_swap(sys.argv[1:]))
+        sys.exit(self_test_swap(sys.argv[1:], TaskWorker))
     if "--self-test-output" in sys.argv:
         import argparse
 

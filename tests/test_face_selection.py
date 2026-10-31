@@ -132,6 +132,9 @@ class FaceSelectionTests(unittest.TestCase):
 
     def test_stopping_worker_while_waiting_for_choice_unblocks(self):
         class Engine:
+            def release_models(self):
+                return False
+
             def preview(self, target_path, face_selector, **_kw):
                 face_selector(target_path, np.zeros((60, 100, 3), np.uint8),
                               [SimpleNamespace(bbox=np.array([5, 5, 45, 45])),

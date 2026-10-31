@@ -34,6 +34,8 @@ Best adds whole-face restoration, which can also change eyes and lips. Balanced 
 
 On an NVIDIA machine, detection, both face models and face restoration can use CUDA. Conservative workspace settings leave room for the models to run together. If identity swapping runs out of GPU memory, Swapio retries the same selected face on CPU and keeps that recovered session for later photos. Detail swapping and restoration also have checked CPU fallbacks. The log reports these changes.
 
+After each preview or batch, Swapio unloads its processing models to free memory for other apps. Your preview stays available. The next job reloads the models automatically, adding a short startup delay.
+
 ## What it preserves
 
 Swapio replaces facial features within the destination photo. The body, hair, background and image dimensions stay. The models aim to retain pose and expression, but can change eyebrows, eyelids and lips. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.

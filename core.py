@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import json
 import os
 import sys
@@ -374,6 +375,21 @@ class SwapEngine:
         self.accelerated_providers = ["CPUExecutionProvider"]
         self.enhancer_cpu_only = False
         self.provider = "Not loaded"
+        self.models_released = False
+
+    def release_models(self) -> bool:
+        """Unload inference sessions between jobs, retaining settings and CPU results."""
+        names = ("analyser", "swapper", "hyperswap", "enhancer", "occluder", "face_parser")
+        if not any(getattr(self, name) is not None for name in names):
+            return False
+        for name in names:
+            setattr(self, name, None)
+        self.provider = "Not loaded"
+        self.models_released = True
+        # ONNX's session destructors own the device arenas. Collect wrappers
+        # with cycles too; this runs on the processing worker, never mid-batch.
+        gc.collect()
+        return True
 
     def ensure_loaded(self, on_log: LogFn = _noop) -> None:
         if self.analyser is not None and self.swapper is not None and self.hyperswap is not None:
@@ -421,6 +437,7 @@ class SwapEngine:
         self.analyser = analyser
         self.swapper = swapper
         self.hyperswap = hyperswap
+        self.models_released = False
         self._refresh_provider()
         analyser_sessions = [
             getattr(model, "session", None) for model in analyser.models.values()

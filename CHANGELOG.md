@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-10-31
+
+### Fixed
+
+- Unload processing models after each preview or batch, including cancellation and errors, to release idle GPU memory for other apps. Preview images remain available.
+- Show an idle status after cleanup. Models reload automatically for the next job, which adds a short startup delay; photos within a batch still share loaded models.
+
 ## [0.5.8] - 2026-10-31
 
 ### Fixed
