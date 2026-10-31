@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-10-31
+
+### Added
+
+- An explicit installed-package diagnostic runs a real selected-face swap and writes a verification report without changing saved preferences.
+
 ### Fixed
 
 - Recover identity-model CUDA failures by retrying the same selected face on CPU and retaining that recovery for the session, instead of failing subsequent photos too.
@@ -9,7 +15,6 @@
 - Show failed batches as warnings with the first error and expandable failure details. Failed photos are explicitly reported as having no new output.
 - Notify KDE file-manager views after saved photos and again at batch completion, so missed filesystem updates do not leave Dolphin showing an empty output folder.
 - Log full output paths and reject missing or empty output files before reporting them saved.
-- Revert the rejected source-appearance renderer and restore the previous face-swap pipeline, restoration slider, and mouth handling. Existing CUDA fixes remain. Previous experimental outputs are eligible for reprocessing.
 - Recover generated eye texture at smaller sizes too, and reuse restoration detail in Careful and Best instead of leaving blurred lids in partially restored faces.
 - Target-eye preservation now includes eyelids and lashes instead of keeping sharp eyeballs inside blurred generated lids.
 - Restore CUDA quality swapping with conservative GPU kernel settings and a checked CPU retry for invalid output or GPU failures.

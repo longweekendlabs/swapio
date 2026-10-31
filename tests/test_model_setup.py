@@ -20,6 +20,28 @@ QT_APP = QApplication.instance() or QApplication([])
 
 
 class ModelSetupTests(unittest.TestCase):
+    def test_frozen_model_lookup_uses_user_data_even_from_a_complete_source_checkout(self):
+        import sys
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = root / "installed" / "_internal"
+            bundle.mkdir(parents=True)
+            checkout = root / "Projects" / "swapio"
+            for name in core.missing_models(checkout / "models"):
+                path = checkout / "models" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            previous = Path.cwd()
+            try:
+                os.chdir(checkout)
+                with patch.object(sys, "frozen", True, create=True), patch.object(
+                    sys, "_MEIPASS", str(bundle), create=True
+                ), patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "user-data"),
+                                           "SWAPIO_MODEL_DIR": ""}):
+                    self.assertEqual(core.model_dir(), root / "user-data" / "swapio" / "models")
+            finally:
+                os.chdir(previous)
+
     def test_release_version(self):
         self.assertRegex(VERSION, r"^\d+\.\d+\.\d+$")
 

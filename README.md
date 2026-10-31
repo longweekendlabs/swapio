@@ -12,17 +12,17 @@ Swapio is free.
 
 ### [Download the latest release](https://github.com/longweekendlabs/swapio/releases/latest)
 
-![Swapio showing a synthetic source portrait beside completed face-swap results](docs/screenshots/hero.png)
+![Swapio showing a synthetic source portrait beside a selected-person face-swap preview](docs/screenshots/hero.png)
 
 ## One face in, a whole folder out
 
 One source portrait per run. Feed it individual photos or a whole folder tree and preview the result before you commit. Swap the largest face, every detected face, or enable "Ask which face to swap when several are detected" to choose a person from numbered thumbnails. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
 
-Repeat a batch and it processes only new or changed photos by default. A photo that fails is skipped and reported at the end rather than killing the run, so a bad file in the middle of two hundred does not cost you the batch.
+Repeat a batch and it processes only new or changed photos by default. A failed photo does not stop the rest of the run. The final warning separates saved, skipped and failed photos and includes the actual errors; failed photos have no new output. Successful saves show their full paths in the log.
 
 ![Swapio's numbered face picker with the smaller person selected](docs/screenshots/face-selection.png)
 
-![Swapio processing a folder of synthetic portraits with progress and completed outputs visible](docs/screenshots/batch-run.png)
+![Swapio showing a completed synthetic portrait batch with its saved count and output path](docs/screenshots/batch-run.png)
 
 ## Four quality modes, and they mean something
 
@@ -32,7 +32,7 @@ Stronger replacements receive limited detail restoration, checked again against 
 
 Best adds whole-face restoration, which can also change eyes and lips. Balanced uses fewer samples, and Fast is available for drafts. These modes cannot guarantee an exact likeness or recover every detail in a close-up.
 
-On an NVIDIA machine, detection, both face models and face restoration can use CUDA. The detail model uses conservative GPU settings to avoid invalid output, and automatically retries on CPU if CUDA fails. Restoration also has a checked CPU fallback.
+On an NVIDIA machine, detection, both face models and face restoration can use CUDA. Conservative workspace settings leave room for the models to run together. If identity swapping runs out of GPU memory, Swapio retries the same selected face on CPU and keeps that recovered session for later photos. Detail swapping and restoration also have checked CPU fallbacks. The log reports these changes.
 
 ## What it preserves
 
@@ -40,13 +40,15 @@ Swapio replaces facial features within the destination photo. The body, hair, ba
 
 Mouth protection keeps the target's open or obstructed expression together, including lips, teeth and tongue. Closed, unobstructed lips stay generated. Foreground protection helps retain objects and hair crossing the face.
 
-Target-eye preservation is off by default. Enabling it copies the target's eye interiors and eye colour into the swapped face. Leaving it off uses generated eyes, whose colour is not guaranteed to match the source exactly. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
+Target-eye preservation is off by default. Enabling it keeps the target's eye interiors, eyelids, lashes and eye colour in the swapped face. Leaving it off uses generated eyes, whose colour is not guaranteed to match the source exactly. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
 
 ## Download
 
 RPM, DEB and AppImage, for Linux on x86_64 and arm64. Grab one from the [latest release](https://github.com/longweekendlabs/swapio/releases/latest).
 
 The package carries no face models and no CUDA libraries. On first launch Swapio lists the models it needs, downloads them from their original publishers, verifies each checksum, and then never touches the network again. On an NVIDIA machine it uses the CUDA you already have; without one it runs on CPU.
+
+Installed models live in your user data folder. The installed app runs independently of the source code and development environment.
 
 ## Formats and naming
 

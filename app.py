@@ -1436,6 +1436,10 @@ def main():
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     app.setFont(QFont("Inter", 10))
+    if "--self-test-swap" in sys.argv:
+        from package_diagnostics import self_test_swap
+
+        sys.exit(self_test_swap(sys.argv[1:]))
     if "--self-test-output" in sys.argv:
         import argparse
 
