@@ -32,7 +32,7 @@ Stronger replacements receive limited detail restoration, checked again against 
 
 Best adds whole-face restoration, which can also change eyes and lips. Balanced uses fewer samples, and Fast is available for drafts. These modes cannot guarantee an exact likeness or recover every detail in a close-up.
 
-On an NVIDIA machine, detection, alternate face replacements, drafts and face restoration can use CUDA. The detail model runs on CPU for stability, and restoration falls back to CPU when necessary.
+On an NVIDIA machine, detection, both face models and face restoration can use CUDA. The detail model uses conservative GPU settings to avoid invalid output, and automatically retries on CPU if CUDA fails. Restoration also has a checked CPU fallback.
 
 ## What it preserves
 

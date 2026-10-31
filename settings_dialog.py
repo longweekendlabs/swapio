@@ -68,6 +68,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(gpu)
         note = QLabel(
             "Changing this preference takes effect after restarting Swapio. "
+            "Swapping and restoration use CUDA when available, with checked CPU fallback. "
             "For smaller faces, Careful and Best compare source likeness across two models. "
             "Careful limits restoration and automatically adjusts sampling for close-up faces."
         )

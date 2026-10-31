@@ -277,7 +277,7 @@ class CoreTests(unittest.TestCase):
         engine.analyser = FakeAnalyser([face])
         order: list[str] = []
 
-        def fake_hyperswap(target, _face, _source, _boost):
+        def fake_hyperswap(target, _face, _source, _boost, _on_log=core._noop):
             order.append("swap")
             return target + 1
 

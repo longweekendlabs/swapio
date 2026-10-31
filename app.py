@@ -12,6 +12,17 @@ from threading import Event
 
 import cv2
 import numpy as np
+import core
+
+# Load the inference library before Qt installs its Python import feature hook.
+# Legacy InsightFace imports augmentation/schema modules that otherwise spend
+# minutes in Shiboken source inspection on the first worker-thread import.
+# Models/GPU sessions remain lazy, and a missing backend is reported by Preview.
+try:
+    import insightface
+except ImportError:
+    pass
+
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, QSize, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -42,7 +53,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import core
 from about_dialog import AboutDialog
 from model_setup_dialog import ModelSetupDialog
 from settings_dialog import SettingsDialog

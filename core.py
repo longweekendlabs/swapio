@@ -16,6 +16,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+# InsightFace's augmentation dependency otherwise checks for updates on import.
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 REQUIRED_BUFFALO_MODELS = {"2d106det.onnx", "det_10g.onnx", "w600k_r50.onnx"}
 SWAPPER_MODEL = "inswapper_128.onnx"
@@ -32,6 +35,11 @@ IDENTITY_RESTORATION_LIMIT = 0.35
 # The alternate model is natively 128px. Beyond a 3x face span its identity
 # gain does not justify sacrificing the existing close-up eye detail.
 MAX_IDENTITY_FACE_SPAN = 128 * 3
+HYPERSWAP_CUDA_OPTIONS = {
+    "cudnn_conv_algo_search": "DEFAULT",
+    "arena_extend_strategy": "kSameAsRequested",
+    "gpu_mem_limit": 2 * 1024**3,
+}
 INNER_MOUTH_106_INDICES = np.array([65, 66, 62, 70, 69, 57, 60, 54])
 # The 106-point model puts each eyelid contour in its own run; 43-51 and 97-105
 # next to them are the eyebrows and must stay out of it.
@@ -352,6 +360,7 @@ class SwapEngine:
         self.analyser = None
         self.swapper = None
         self.hyperswap = None
+        self.hyperswap_cpu_only = False
         self.enhancer = None
         self.occluder = None
         self.face_parser = None
@@ -392,12 +401,20 @@ class SwapEngine:
         )
         analyser.prepare(ctx_id=0 if want_cuda else -1, det_size=(self.det_size, self.det_size))
         swapper = model_zoo.get_model(str(self.models / SWAPPER_MODEL), providers=providers)
-        # HyperSwap currently returns non-finite pixels through CUDA on some
-        # consumer NVIDIA cards/drivers. Keep detection and the draft swapper
-        # accelerated, but run the quality model on its reliable CPU path.
-        hyperswap = ort.InferenceSession(
-            str(self.models / HYPERSWAP_MODEL), providers=["CPUExecutionProvider"]
+        # cuDNN's exhaustive search produced non-finite fp16 pixels on the tested
+        # GTX 1660 Ti. Conservative algorithms are valid on the real model; retain
+        # a checked CPU fallback for cards/inputs that still cannot run it.
+        quality_providers = (
+            [("CUDAExecutionProvider", HYPERSWAP_CUDA_OPTIONS), "CPUExecutionProvider"]
+            if want_cuda and not self.hyperswap_cpu_only else ["CPUExecutionProvider"]
         )
+        hyperswap = ort.InferenceSession(
+            str(self.models / HYPERSWAP_MODEL), providers=quality_providers,
+        )
+        self.analyser = analyser
+        self.swapper = swapper
+        self.hyperswap = hyperswap
+        self._refresh_provider()
         analyser_sessions = [
             getattr(model, "session", None) for model in analyser.models.values()
         ]
@@ -406,15 +423,32 @@ class SwapEngine:
             session is not None and "CUDAExecutionProvider" in session.get_providers()
             for session in accelerated_sessions
         )
-        self.provider = "CUDA detection/identity · CPU detail" if actual_cuda else "CPU"
-        if actual_cuda:
-            on_log("CUDA accelerates detection and identity swaps; the detail model uses CPU.")
+        quality_cuda = hyperswap.get_providers()[0] == "CUDAExecutionProvider"
+        if actual_cuda or quality_cuda:
+            if actual_cuda and quality_cuda:
+                on_log("CUDA accelerates detection, identity and quality swaps.")
+            elif actual_cuda:
+                on_log("CUDA accelerates detection and identity swaps; the detail model uses CPU.")
+            else:
+                on_log("CUDA accelerates quality swaps; detection and identity use CPU.")
         elif want_cuda:
             on_log("CUDA runtime was found but could not start; using CPU safely.")
+        elif self.use_gpu:
+            on_log("CUDA is enabled in Settings, but this runtime has no CUDA provider; using CPU.")
         on_log(f"Models ready on {self.provider}.")
-        self.analyser = analyser
-        self.swapper = swapper
-        self.hyperswap = hyperswap
+
+    def _refresh_provider(self):
+        models = (getattr(self.analyser, "models", None) or {}).values()
+        sessions = [getattr(model, "session", None) for model in models]
+        sessions.append(getattr(self.swapper, "session", None))
+        accelerated = any(session is not None and "CUDAExecutionProvider" in session.get_providers()
+                          for session in sessions)
+        quality_cuda = (self.hyperswap is not None
+                        and self.hyperswap.get_providers()[0] == "CUDAExecutionProvider")
+        if quality_cuda:
+            self.provider = "CUDA" if accelerated else "CUDA detail · CPU detection/identity"
+        else:
+            self.provider = "CUDA detection/identity · CPU detail" if accelerated else "CPU"
 
     def _ensure_enhancer(self, on_log: LogFn = _noop):
         """Load the face restoration model the first time Best quality runs."""
@@ -452,7 +486,7 @@ class SwapEngine:
 
         if self.occluder is None:
             self.occluder = ort.InferenceSession(
-                str(self.models / OCCLUDER_MODEL), providers=["CPUExecutionProvider"]
+                str(self.models / OCCLUDER_MODEL), providers=["CPUExecutionProvider"],
             )
         matrix = face_align.estimate_norm(face.kps, 256)
         crop = cv2.warpAffine(original, matrix, (256, 256),
@@ -494,7 +528,7 @@ class SwapEngine:
 
         if self.face_parser is None:
             self.face_parser = ort.InferenceSession(
-                str(self.models / FACE_PARSER_MODEL), providers=["CPUExecutionProvider"]
+                str(self.models / FACE_PARSER_MODEL), providers=["CPUExecutionProvider"],
             )
         if matrix is None:
             kps = np.asarray(getattr(face, "kps", None), np.float32)
@@ -832,7 +866,34 @@ class SwapEngine:
         mask = np.clip(mask, 0.0, 1.0)[:, :, None]
         return (mask * warped + (1 - mask) * target.astype(np.float32)).astype(np.uint8)
 
-    def _hyperswap_face(self, target: np.ndarray, target_face, source_face, boost_size: int):
+    def _run_hyperswap(self, feed, on_log=_noop):
+        session = self.hyperswap
+        accelerated = session.get_providers()[0] == "CUDAExecutionProvider"
+
+        def infer(active):
+            prediction = active.run(None, feed)[0][0]
+            if (prediction.shape != (3, 256, 256) or not np.isfinite(prediction).all()
+                    or np.max(np.abs(prediction)) > 100):
+                raise RuntimeError("The quality model returned invalid pixels; the result was not saved.")
+            return prediction
+
+        try:
+            return infer(session)
+        except Exception as exc:
+            if not accelerated:
+                raise
+            on_log(f"Quality model failed on CUDA ({type(exc).__name__}); retrying safely on CPU.")
+        import onnxruntime as ort
+
+        self.hyperswap_cpu_only = True
+        self.hyperswap = ort.InferenceSession(
+            str(self.models / HYPERSWAP_MODEL), providers=["CPUExecutionProvider"],
+        )
+        self._refresh_provider()
+        return infer(self.hyperswap)
+
+    def _hyperswap_face(self, target: np.ndarray, target_face, source_face, boost_size: int,
+                       on_log: LogFn = _noop):
         from insightface.utils import face_align
 
         model_size = 256
@@ -854,13 +915,9 @@ class SwapEngine:
         for tile in tiles:
             target_blob = ((tile[:, :, ::-1] / 255.0 - 0.5) / 0.5)
             target_blob = target_blob.transpose(2, 0, 1)[None].astype(np.float32)
-            prediction = self.hyperswap.run(
-                None, {"source": source_embedding, "target": target_blob}
-            )[0][0]
-            if not np.isfinite(prediction).all() or np.max(np.abs(prediction)) > 100:
-                raise RuntimeError(
-                    "The quality model returned invalid pixels; the result was not saved."
-                )
+            prediction = self._run_hyperswap(
+                {"source": source_embedding, "target": target_blob}, on_log,
+            )
             prediction = prediction.transpose(1, 2, 0)
             swapped = np.clip((prediction * 0.5 + 0.5) * 255, 0, 255)
             swapped_tiles.append(swapped[:, :, ::-1])
@@ -918,7 +975,7 @@ class SwapEngine:
     def _identity_checked_face(self, target, target_face, source_face, boost_size,
                                quality, restoration_strength, on_log, finish=None):
         finalize = finish if finish is not None else lambda image, _identity: image
-        primary = self._hyperswap_face(target, target_face, source_face, boost_size)
+        primary = self._hyperswap_face(target, target_face, source_face, boost_size, on_log)
         if quality not in BOOSTED_QUALITIES:
             return finalize(primary, False), False
         box = np.asarray(target_face.bbox, np.float32)

@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Restore CUDA quality swapping with conservative GPU kernel settings and a checked CPU retry for invalid output or GPU failures.
+- Pin the face-analysis library to the compatible release so CUDA installations do not also pull in a conflicting CPU runtime.
+- Prepare inference-library imports before Qt to avoid slow first-preview imports in the worker thread.
 - For smaller faces, Careful and Best compare both local face models against the source portrait, selecting a stronger replacement when the finished result gives a clear likeness gain. Larger faces and similar matches keep the existing detailed result.
 - Careful restores detail in stronger replacements with a bounded strength and checks that restoration retains the likeness gain. The restoration slider still disables or limits this pass.
 - Reprocess unchanged batches after this face-processing change instead of skipping previous outputs.

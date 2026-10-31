@@ -1,5 +1,7 @@
 PySide6>=6.7,<7
-insightface>=0.7.3,<2
+# 1.0.1 requires the CPU onnxruntime distribution, which collides with the CUDA
+# package. 0.7.3 supports the explicitly selected CPU or GPU runtime instead.
+insightface==0.7.3
 opencv-python-headless>=4.10,<5.1
 numpy>=1.26,<3
 pillow>=10,<13
