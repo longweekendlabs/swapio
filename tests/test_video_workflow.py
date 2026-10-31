@@ -97,11 +97,37 @@ class UnifiedMediaTests(unittest.TestCase):
 
     def test_duration_warning_distinguishes_one_and_three_minutes(self):
         a,b,c=self.add('short.mp4','long.mp4','very-long.mp4')
+        self.window.include_videos.setChecked(True)
         def info(path,seconds):return video.VideoInfo(path,96,96,Fraction(25),seconds,False)
         with patch('app.QMessageBox.warning') as warning:
             self.window._durations_ready({str(a):info(a,30),str(b):info(b,80),str(c):info(c,200)})
         text=warning.call_args.args[2]
         self.assertNotIn('short.mp4',text);self.assertIn('over 1 minute',text);self.assertIn('over 3 minutes',text)
+        self.assertIn('photos only',text)
+
+    def test_excluded_clips_do_not_probe_or_warn_and_enabling_combines_the_notices(self):
+        w=self.window
+        with patch('app.DurationWorker.start') as start,patch('app.QMessageBox.warning') as warn,patch('app.QMessageBox.information') as info:
+            (clip,)=self.add('long.mp4');start.assert_not_called()
+            w._durations_ready({str(clip):video.VideoInfo(clip,96,96,Fraction(25),200,False)})
+            warn.assert_not_called();info.assert_not_called()
+            self.assertFalse(w.video_start.isEnabled());self.assertFalse(w.video_end.isEnabled())
+            w.include_videos.setChecked(True)
+            self.assertTrue(w.video_start.isEnabled());self.assertTrue(w.video_end.isEnabled())
+            self.assertEqual((w.video_start.value(),w.video_end.value()),(0,0))
+            warn.assert_called_once();info.assert_not_called()
+            self.assertIn('photos only',warn.call_args.args[2]);self.assertIn('over 3 minutes',warn.call_args.args[2])
+            w._warn_included_durations();warn.assert_called_once()
+            w.include_videos.setChecked(False)
+            self.assertFalse(w.video_start.isEnabled());self.assertFalse(w.video_end.isEnabled())
+
+    def test_short_clip_notice_is_only_shown_when_enabled_and_duration_arrives(self):
+        w=self.window;(clip,)=self.add('clip.gif')
+        with patch('app.QMessageBox.information') as notice,patch('app.QMessageBox.warning') as warning:
+            w.include_videos.setChecked(True);notice.assert_not_called()
+            w._durations_ready({str(clip):video.VideoInfo(clip,96,96,Fraction(10),2,False)})
+            notice.assert_called_once();warning.assert_not_called()
+            self.assertIn('one selected face',notice.call_args.args[2])
 
     def test_preview_time_popup_can_cancel_without_loading_models(self):
         (clip,)=self.add('clip.mp4');w=self.window;w.include_videos.setChecked(True);w.source_path=self.root/'source.png'

@@ -9,9 +9,36 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
+import media_tools
+import about_dialog
 
 
 class NativeDialogTests(unittest.TestCase):
+    @patch('media_tools.subprocess.Popen')
+    @patch('media_tools.shutil.which',side_effect=lambda name:'/usr/bin/xdg-open' if name=='xdg-open' else None)
+    def test_about_web_links_use_the_clean_system_browser_environment(self,_which,popen):
+        with patch.object(sys,'frozen',True,create=True),patch.dict(os.environ,{'LD_LIBRARY_PATH':'/private/bundle','QT_PLUGIN_PATH':'/private/qt'}):
+            self.assertTrue(media_tools.open_web_url('https://longweekendlabs.app'))
+        self.assertEqual(popen.call_args.args[0],['/usr/bin/xdg-open','https://longweekendlabs.app'])
+        env=popen.call_args.kwargs['env']
+        self.assertNotEqual(env.get('LD_LIBRARY_PATH'),'/private/bundle');self.assertNotIn('QT_PLUGIN_PATH',env)
+        self.assertFalse(media_tools.open_web_url('file:///tmp/should-not-open'))
+
+    @patch('about_dialog.open_web_url',return_value=True)
+    def test_about_contains_and_activates_publisher_website_and_feedback(self,open_link):
+        from PySide6.QtWidgets import QApplication,QLabel
+        qt=QApplication.instance() or QApplication([])
+        dialog=about_dialog.AboutDialog();dialog.show();qt.processEvents()
+        links=[label for label in dialog.findChildren(QLabel) if '<a href=' in label.text()]
+        self.assertEqual(len(links),3)
+        self.assertTrue(any('https://longweekendlabs.app' in link.text() for link in links))
+        for label in links:
+            url=label.text().split('href="')[1].split('"')[0]
+            label.linkActivated.emit(url)
+        self.assertEqual([call.args[0] for call in open_link.call_args_list],
+            ['https://longweekendlabs.app',app.GITHUB_URL,app.GITHUB_URL+'/issues'])
+        dialog.close()
+
     @patch("PySide6.QtDBus.QDBusConnection.sessionBus")
     def test_saved_folder_notification_matches_kde_protocol(self, session_bus):
         from PySide6.QtCore import QUrl

@@ -296,6 +296,7 @@ class ImageView(QLabel):
         # the options section grew. Keep the canvases flexible so every card
         # remains inside the shared workflow row.
         self.setMinimumSize(180, 70)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.setObjectName("imageView")
 
     def set_image(self, image) -> None:
@@ -324,21 +325,47 @@ class ImageView(QLabel):
             )
 
 
+class ElidedLabel(QLabel):
+    """A one-line caption whose contents cannot enlarge its window."""
+    def __init__(self, text):
+        super().__init__()
+        self._full_text = text
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setMinimumWidth(0)
+        self.setFixedHeight(20)
+        self._refresh_text()
+
+    def setText(self, text):
+        self._full_text = text
+        self.setToolTip(text)
+        self._refresh_text()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def _refresh_text(self):
+        super().setText(self.fontMetrics().elidedText(self._full_text, Qt.ElideMiddle, max(1,self.width())))
+
+
 class FaceSelectionDialog(QDialog):
     STOP_BATCH = 2
 
-    def __init__(self, target, image, boxes, batch=False, parent=None):
+    def __init__(self, target, image, boxes, batch=False, parent=None, allow_multiple=True):
         super().__init__(parent)
         self.selected_index = None
-        self.setWindowTitle("Choose the face to swap")
+        self.selected_indices = ()
+        self.allow_multiple = allow_multiple
+        self.setWindowTitle("Choose faces to swap" if allow_multiple else "Choose the face to follow")
         self.resize(780, 640)
         self.setMinimumSize(620, 440)
         layout = QVBoxLayout(self)
-        heading = QLabel(Path(target).name)
+        heading = ElidedLabel(Path(target).name)
+        heading.setFixedHeight(28)
         heading.setObjectName("aboutName")
-        heading.setWordWrap(True)
         layout.addWidget(heading)
-        instruction = QLabel("Select a numbered face below. Only that face will be swapped.")
+        instruction = QLabel("Click numbered faces to select or deselect them. All selected faces will be swapped, including reflections."
+            if allow_multiple else "Videos and GIFs follow one face per clip. Select one numbered face. Multiple-face selection is available for photos only.")
         instruction.setWordWrap(True)
         layout.addWidget(instruction)
         height, width = image.shape[:2]
@@ -355,6 +382,7 @@ class FaceSelectionDialog(QDialog):
         layout.addWidget(overview, 1)
         self.faces = QListWidget()
         self.faces.setViewMode(QListView.IconMode)
+        self.faces.setSelectionMode(QListView.MultiSelection if allow_multiple else QListView.SingleSelection)
         self.faces.setResizeMode(QListView.Adjust)
         self.faces.setIconSize(QSize(104, 104))
         self.faces.setGridSize(QSize(124, 136))
@@ -378,16 +406,15 @@ class FaceSelectionDialog(QDialog):
         buttons.addWidget(skip)
         if batch:
             stop = QPushButton("Stop batch")
-            stop.clicked.connect(lambda: self.done(self.STOP_BATCH))
+            stop.clicked.connect(self._stop_batch)
             buttons.addWidget(stop)
         buttons.addStretch()
-        self.swap_button = QPushButton("Swap selected face")
+        self.swap_button = QPushButton("Swap selected faces" if allow_multiple else "Follow selected face")
         self.swap_button.setObjectName("primary")
         self.swap_button.setDefault(True)
         self.swap_button.setEnabled(False)
         self.swap_button.clicked.connect(self._accept_face)
-        self.faces.currentRowChanged.connect(lambda row: self.swap_button.setEnabled(row >= 0))
-        self.faces.itemDoubleClicked.connect(lambda _item: self._accept_face())
+        self.faces.itemSelectionChanged.connect(self._selection_changed)
         buttons.addWidget(self.swap_button)
         layout.addLayout(buttons)
         # QListWidget otherwise selects its first row when it receives the
@@ -395,10 +422,17 @@ class FaceSelectionDialog(QDialog):
         skip.setFocus(Qt.OtherFocusReason)
 
     def _accept_face(self):
-        row = self.faces.currentRow()
-        if row >= 0:
-            self.selected_index = row
+        selected = tuple(sorted(self.faces.row(item) for item in self.faces.selectedItems()))
+        if selected:
+            self.selected_indices = selected
+            self.selected_index = selected[0] if len(selected) == 1 else selected
             self.accept()
+
+    def _selection_changed(self):
+        self.swap_button.setEnabled(bool(self.faces.selectedItems()))
+
+    def _stop_batch(self):
+        self.done(self.STOP_BATCH)
 
 
 class TaskWorker(QThread):
@@ -624,7 +658,7 @@ class MainWindow(QMainWindow):
         self.source_path: Path | None = None
         self.targets: list[Path] = []
         self.worker: QThread | None = None
-        self.face_choices: dict[str, int] = {}
+        self.face_choices: dict[str, core.FaceChoice] = {}
         self._face_dialog = None
         self.last_output: Path | None = None
         self.video_ranges = {}
@@ -635,6 +669,8 @@ class MainWindow(QMainWindow):
         self._trim_path = None
         self._pending_probes = []
         self.duration_worker = None
+        self._duration_warnings_shown = set()
+        self._motion_notice_shown = False
         self._video_quality_locked = False
         self._photo_quality = 'careful'
         self._photo_format = 'jpg'
@@ -750,6 +786,7 @@ class MainWindow(QMainWindow):
         source_layout = QVBoxLayout(source_box)
         source_layout.setSpacing(8)
         self.source_view = ImageView("Choose one clear source portrait")
+        self.source_view.setToolTip('Use one sharp, evenly lit portrait, facing forward or slightly turned. Keep eyes visible and use a neutral expression or gentle smile. The face should occupy a substantial part of the photo.')
         source_layout.addWidget(self.source_view, stretch=1)
         source_footer = QWidget()
         source_footer.setObjectName("cardFooter")
@@ -757,9 +794,8 @@ class MainWindow(QMainWindow):
         source_footer_layout = QVBoxLayout(source_footer)
         source_footer_layout.setContentsMargins(0, 0, 0, 0)
         source_footer_layout.setSpacing(6)
-        self.source_name = QLabel("No source selected")
+        self.source_name = ElidedLabel("No source selected")
         self.source_name.setObjectName("fileName")
-        self.source_name.setWordWrap(True)
         source_footer_layout.addWidget(self.source_name)
         self.character_name = QLineEdit()
         self.character_name.setPlaceholderText("Character name for output files (optional)")
@@ -829,6 +865,9 @@ class MainWindow(QMainWindow):
             spin.setSingleStep(.5)
             spin.valueChanged.connect(self._trim_changed)
         self.video_end.setSpecialValueText('End of clip')
+        self.video_start.setSpecialValueText('Start of clip')
+        for spin in (self.video_start,self.video_end):
+            spin.setToolTip('Optional range for the selected video or GIF only. Leave Start of clip / End of clip to render the entire clip.')
         trim.addWidget(QLabel('Clip from'))
         trim.addWidget(self.video_start,1)
         trim.addWidget(QLabel('to'))
@@ -848,9 +887,8 @@ class MainWindow(QMainWindow):
         preview_footer_layout = QVBoxLayout(preview_footer)
         preview_footer_layout.setContentsMargins(0, 0, 0, 0)
         preview_footer_layout.setSpacing(6)
-        self.preview_caption = QLabel("Nothing generated yet")
+        self.preview_caption = ElidedLabel("Nothing generated yet")
         self.preview_caption.setObjectName("fileName")
-        self.preview_caption.setWordWrap(True)
         preview_footer_layout.addWidget(self.preview_caption)
         preview_footer_layout.addStretch(1)
         self.play_preview_button = QPushButton('Play video preview')
@@ -890,7 +928,7 @@ class MainWindow(QMainWindow):
 
         self.ask_face = QCheckBox("Ask which face to swap when several are detected")
         self.ask_face.setToolTip(
-            "Choose one face per photo using numbered thumbnails. Single-face photos "
+            "Choose one or more faces per photo using numbered thumbnails. Single-face photos "
             "continue automatically. Overrides the largest/every-face setting while enabled. "
             "Choices are remembered during this session. Multiple-person videos and GIFs always ask you to choose one person."
         )
@@ -985,7 +1023,7 @@ class MainWindow(QMainWindow):
         faces = QHBoxLayout(face_options)
         faces.setContentsMargins(0,0,0,0)
         faces.addWidget(self.face_mode,1)
-        self.ask_face.setText('Ask which face')
+        self.ask_face.setText('Ask which faces')
         faces.addWidget(self.ask_face)
         strength_options = QWidget()
         strength_options.setObjectName('cardFooter')
@@ -1176,6 +1214,12 @@ class MainWindow(QMainWindow):
         self._sync_video_quality()
         self._refresh_target_count()
         self._show_selected_target(self.target_list.currentRow())
+        if not self.include_videos.isChecked():
+            self._duration_warnings_shown.clear()
+            self._motion_notice_shown = False
+        else:
+            self._warn_included_durations()
+            self._start_duration_scan()
         self._save_state()
 
     def _trim_changed(self):
@@ -1189,11 +1233,15 @@ class MainWindow(QMainWindow):
         self.preview_caption.setText('Range changed. Generate a new 2-second preview.')
 
     def _start_duration_scan(self):
-        if getattr(self,'_closing',False) or not self._pending_probes:
+        if (getattr(self,'_closing',False) or not self._pending_probes
+                or not self.include_videos.isChecked()):
             return
         if self.duration_worker is not None and self.duration_worker.isRunning():
             return
         paths,self._pending_probes = self._pending_probes,[]
+        paths = list(dict.fromkeys(p for p in paths if p in self.targets and str(p) not in self.video_info))
+        if not paths:
+            return
         self.duration_worker = DurationWorker(paths)
         self.duration_worker.ready.connect(self._durations_ready)
         self.duration_worker.finished.connect(self._duration_scan_finished)
@@ -1205,24 +1253,42 @@ class MainWindow(QMainWindow):
         self._refresh_controls()
 
     def _durations_ready(self, results):
-        warnings = []
         for path,info in results.items():
             if Path(path) not in self.targets:
                 continue
             self.video_info[path] = info
+        if self._is_motion(self._selected_target()) and str(self._selected_target()) in results:
+            self._show_selected_target(self.target_list.currentRow())
+        self._warn_included_durations()
+        self._refresh_controls()
+
+    def _warn_included_durations(self):
+        if not self.include_videos.isChecked() or getattr(self,'_closing',False):
+            return
+        clips = [p for p in self.targets if self._is_motion(p)]
+        if not clips or any(str(p) not in self.video_info for p in clips):
+            return
+        notice = not self._motion_notice_shown
+        warnings = []
+        for target in clips:
+            path = str(target)
+            info = self.video_info.get(path)
+            if info is None or path in self._duration_warnings_shown:
+                continue
+            self._duration_warnings_shown.add(path)
             if isinstance(info,str):
                 warnings.append(f'{Path(path).name}: could not inspect duration. {info}')
             elif info.duration > 180:
                 warnings.append(f'{Path(path).name}: {info.duration/60:.1f} minutes (over 3 minutes).')
             elif info.duration > 60:
                 warnings.append(f'{Path(path).name}: {info.duration/60:.1f} minutes (over 1 minute).')
-        if self._is_motion(self._selected_target()) and str(self._selected_target()) in results:
-            self._show_selected_target(self.target_list.currentRow())
-        if warnings:
-            QMessageBox.warning(self,'Clip duration', '\n'.join(warnings[:12])
+        if warnings or notice:
+            self._motion_notice_shown = True
+            message = ('Videos and GIFs follow one selected face per clip. Choosing multiple faces is available for photos only.\n\n'
+                + '\n'.join(warnings[:12])
                 + ('\nMore long clips are in the queue.' if len(warnings)>12 else '')
-                + '\n\nCareful animation rendering can take a long time. Select a clip and adjust Clip from / to for a shorter range. Originals stay untouched.')
-        self._refresh_controls()
+                + '\n\nCareful animation rendering can take a long time. Clip from / to is optional and applies to the selected clip only. Leave it at Start of clip / End of clip to render the full clip. Originals stay untouched.')
+            (QMessageBox.warning if warnings else QMessageBox.information)(self,'Video / GIF processing',message)
 
     def _play_video_preview(self):
         if self.video_preview_path and self.video_preview_path.is_file():
@@ -1243,6 +1309,7 @@ class MainWindow(QMainWindow):
         self.video_selections.pop(str(path),None)
         self.video_ranges.pop(str(path),None)
         self.video_info.pop(str(path),None)
+        self._duration_warnings_shown.discard(str(path))
         self.target_list.takeItem(row)
         self._sync_video_quality()
         self._refresh_target_count()
@@ -1253,6 +1320,8 @@ class MainWindow(QMainWindow):
         self.video_ranges.clear()
         self.video_selections.clear()
         self.video_info.clear()
+        self._duration_warnings_shown.clear()
+        self._motion_notice_shown = False
         self._sync_video_quality()
         self.target_list.clear()
         self.preview_view.clear_image()
@@ -1335,7 +1404,7 @@ class MainWindow(QMainWindow):
         self.video_selections.clear()
         self.video_preview_path = None
         self.play_preview_button.setEnabled(False)
-        self.preview_view.clear_image("Click Preview to choose a face")
+        self.preview_view.clear_image("Click Preview to choose faces")
         self.preview_caption.setText("Face choices reset")
         self._refresh_controls()
 
@@ -1345,7 +1414,8 @@ class MainWindow(QMainWindow):
             return
         try:
             dialog = FaceSelectionDialog(request["target"], request["image"], request["boxes"],
-                                         batch=worker.mode == "batch", parent=self)
+                                         batch=worker.mode == "batch", parent=self,
+                                         allow_multiple=not self._is_motion(request['target']))
             self._face_dialog = dialog
             self.status_label.setText("Waiting for face selection…")
             result = dialog.exec()
@@ -1436,7 +1506,7 @@ class MainWindow(QMainWindow):
             return
         kind = 'GIF' if target.suffix.lower() in gif.GIF_EXTENSIONS else 'video'
         answer = QMessageBox.information(self,f'2-second {kind} preview',
-            f'Swapio will render a 2-second {kind} preview using Careful. This can take a few minutes depending on the face and your device.\n\nUse Play {kind} preview when it finishes to review the animation.',
+            f'Swapio will render a 2-second {kind} preview using Careful. This can take a few minutes depending on the face and your device.\n\nVideos and GIFs follow one face per clip; choosing multiple faces is available for photos only.\n\nUse Play {kind} preview when it finishes to review the animation.',
             QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Ok)
         if answer != QMessageBox.Ok:
             return
@@ -1503,7 +1573,7 @@ class MainWindow(QMainWindow):
         self.preview_view.set_image(result["image"])
         target = Path(result["target"]).name
         choice = result.get("target_face_index")
-        detail = (f"face {choice + 1} of {result['detected']}" if choice is not None
+        detail = (core.face_choice_description(choice,result['detected']) if choice is not None
                   else f"swapped {result['swapped']} face(s)")
         self.preview_caption.setText(
             f"{target} — {detail} · "
@@ -1856,6 +1926,10 @@ class MainWindow(QMainWindow):
                                     padding:7px 9px; color:{TEXT}; selection-background-color:{ACCENT}; }}
             QLineEdit:focus, QComboBox:focus {{ border-color:{ACCENT}; }}
             QComboBox:disabled {{ color:#727c89; background:#191c22; border-color:#2a3039; }}
+            QDoubleSpinBox {{ background:{INPUT}; border:1px solid {BORDER}; border-radius:5px;
+                              padding:3px 6px; color:{TEXT}; }}
+            QDoubleSpinBox:disabled {{ color:#59616c; background:#191c22; border-color:#2a3039; }}
+            QLabel:disabled {{ color:#59616c; }}
             QComboBox::drop-down {{ border:none; width:22px; }}
             QPushButton {{ background:{INPUT}; border:1px solid {BORDER}; border-radius:7px;
                            padding:8px 14px; color:{TEXT}; }}

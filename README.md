@@ -16,13 +16,19 @@ Swapio is free.
 
 ## One face in, a whole folder out
 
-One source portrait per run. Use Add media for individual files or add a whole folder tree, then preview before rendering. Photos, videos and GIFs share one three-step workflow: source, destination media, output and quality. Swap the largest face, every detected face, or enable "Ask which face to swap when several are detected" to choose a person from numbered thumbnails. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
+One source portrait per run. Use Add media for individual files or add a whole folder tree, then preview before rendering. Photos, videos and GIFs share one three-step workflow: source, destination media, output and quality. Swap the largest face, every detected face, or enable "Ask which faces" to select one or more numbered thumbnails in each photo. Click faces to toggle them, including mirror reflections, then swap only the selected faces. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
 
 Repeat a batch and it processes only new or changed photos by default. A failed photo does not stop the rest of the run. The final warning separates saved, skipped and failed photos and includes the actual errors; failed photos have no new output. Successful saves show their full paths in the log.
 
 ![Swapio's numbered face picker with the smaller person selected](docs/screenshots/face-selection.png)
 
 ![Swapio showing a completed synthetic portrait batch with its saved count and output path](docs/screenshots/batch-run.png)
+
+## Choose a clear source portrait
+
+Use one sharp, evenly lit portrait with the face forward or slightly turned, both eyes visible, and a neutral expression or gentle smile. Let the face occupy a substantial part of the image. A face a few hundred pixels across is a useful starting point; Swapio does not impose a minimum source-face pixel size or require a 4K file.
+
+If the source photo contains several people, Swapio uses the largest detected face. Blur, heavy filters, harsh shadows, extreme angles and exaggerated expressions can affect likeness even in a large file. Changing the source portrait can change the results substantially; higher resolution alone does not guarantee a better swap.
 
 ## Four quality modes, and they mean something
 
@@ -48,7 +54,7 @@ Target-eye preservation is off by default. Enabling it keeps the target's eye in
 
 Tick Include videos / GIFs to process clips and GIF animations in the same queue as photos. When included clips are present, quality switches to Careful and stays locked; unticking restores your photo quality choice. The same source portrait, eye, mouth and restoration controls apply.
 
-Select a video or GIF to adjust its start and end directly below the queue. Import warns about clips over one minute, with a stronger warning above three minutes. Preview selected media confirms that animation processing takes time, then generates up to two seconds for playback in your usual video player. Choose the person to follow when prompted; multiple-person clips always require an explicit choice.
+Select a video or GIF to adjust its own optional start and end directly below the queue. Leave Start of clip / End of clip for the full clip. These controls stay greyed out for photos and while videos/GIFs are excluded. Enabling included clips shows one combined notice explaining that clips follow one face each, with warnings for durations over one and three minutes. Excluded clips do not trigger these notices. Preview selected media confirms that animation processing takes time, then generates up to two seconds for playback in your usual video player. Choose the person to follow when prompted; multiple-person clips always require one explicit face choice. Selecting several faces is available for photos only.
 
 Tracking checks the selected person's original face identity on every frame. Uncertain matches stay unchanged and are counted in the result. The face model and sampling choice stay fixed within each continuous scene to reduce flicker; blinking, speech, occlusion and cuts still need visual review.
 

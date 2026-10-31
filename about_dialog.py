@@ -8,12 +8,14 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
 )
 
 import core
-from version import APP_NAME, COPYRIGHT, GITHUB_URL, ORGANIZATION, VERSION, TAGLINE
+from media_tools import open_web_url
+from version import APP_NAME, COPYRIGHT, GITHUB_URL, ORGANIZATION, VERSION, TAGLINE, WEBSITE_URL
 
 
 class AboutDialog(QDialog):
@@ -32,7 +34,7 @@ class AboutDialog(QDialog):
         icon_path = core.base_dir() / "assets" / "swapio.svg"
         if icon_path.exists():
             logo = QLabel()
-            logo.setPixmap(QIcon(str(icon_path)).pixmap(68, 68))
+            logo.setPixmap(QIcon(str(icon_path)).pixmap(56, 56))
             logo.setAlignment(Qt.AlignCenter)
             layout.addWidget(logo)
 
@@ -56,17 +58,26 @@ class AboutDialog(QDialog):
         description.setWordWrap(True)
         layout.addWidget(description)
 
+        licence = QLabel('FREE & OPEN SOURCE · MIT')
+        licence.setObjectName('aboutFinePrint')
+        licence.setAlignment(Qt.AlignCenter)
+        layout.addWidget(licence)
+
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setObjectName("aboutDivider")
         layout.addWidget(divider)
 
-        link = QLabel(
-            f'<a href="{GITHUB_URL}">github.com/longweekendlabs/swapio</a>'
-        )
-        link.setOpenExternalLinks(True)
-        link.setAlignment(Qt.AlignCenter)
-        layout.addWidget(link)
+        for url, title in (
+            (WEBSITE_URL, 'longweekendlabs.app'),
+            (GITHUB_URL, 'GitHub'),
+            (GITHUB_URL+'/issues', 'Feedback'),
+        ):
+            link = QLabel(f'<a href="{url}">{title}</a>')
+            link.setAlignment(Qt.AlignCenter)
+            link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            link.linkActivated.connect(self._open_link)
+            layout.addWidget(link)
 
         licensing = QLabel(
             "Application code and pretrained face models have separate licenses. "
@@ -94,3 +105,7 @@ class AboutDialog(QDialog):
         buttons.addWidget(close)
         buttons.addStretch(1)
         layout.addLayout(buttons)
+
+    def _open_link(self, url):
+        if not open_web_url(url):
+            QMessageBox.warning(self, 'Open website', f'Could not open your browser.\n{url}')

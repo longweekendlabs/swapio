@@ -74,7 +74,23 @@ BOOSTED_QUALITIES = frozenset({"careful", "best"})
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[int, int, dict], None]
 StopFn = Callable[[], bool]
-FaceSelector = Callable[[Path, np.ndarray, list], int | None]
+FaceChoice = int | tuple[int, ...]
+FaceSelector = Callable[[Path, np.ndarray, list], FaceChoice | list[int] | None]
+
+
+def face_choice_indices(choice, count):
+    """Validate and canonicalize a chosen subset, without falling back to others."""
+    values = (choice,) if isinstance(choice, (int, np.integer)) else choice
+    if (not isinstance(values, (list, tuple)) or not values or
+            any(not isinstance(i, (int, np.integer)) or isinstance(i, (bool, np.bool_))
+                or not 0 <= i < count for i in values)):
+        raise RuntimeError("Selected face is unavailable; result was not saved.")
+    return tuple(sorted(set(int(i) for i in values)))
+
+
+def face_choice_description(choice, detected):
+    indices = face_choice_indices(choice, detected)
+    return ('face ' if len(indices) == 1 else 'faces ') + ', '.join(str(i+1) for i in indices) + f' of {detected}'
 
 
 class FaceSelectionSkipped(RuntimeError):
@@ -258,7 +274,7 @@ def processing_key(
     preserve_mouth: bool,
     destination_eyes: bool,
     restoration_strength: float,
-    target_face_index: int | None = None,
+    target_face_index: FaceChoice | None = None,
     target_face_box=None,
 ) -> str:
     """Identify an unchanged input and the settings that produced its output."""
@@ -1431,7 +1447,7 @@ class SwapEngine:
         destination_eyes: bool = False,
         restoration_strength: float = DEFAULT_RESTORATION_STRENGTH,
         on_log: LogFn = _noop,
-        target_face_index: int | None = None,
+        target_face_index: FaceChoice | None = None,
         detected_faces: list | None = None,
     ):
         faces = sorted(self.analyser.get(target) if detected_faces is None else detected_faces,
@@ -1439,10 +1455,7 @@ class SwapEngine:
         if not faces:
             raise RuntimeError("No destination face detected")
         if target_face_index is not None:
-            if (not isinstance(target_face_index, (int, np.integer))
-                    or not 0 <= target_face_index < len(faces)):
-                raise RuntimeError("Selected face is unavailable; result was not saved.")
-            selected = [faces[target_face_index]]
+            selected = [faces[i] for i in face_choice_indices(target_face_index,len(faces))]
         else:
             selected = faces if all_faces else faces[:1]
         result = target.copy()
@@ -1502,9 +1515,8 @@ class SwapEngine:
         choice = 0 if len(faces) == 1 else face_selector(Path(target_path), target, faces)
         if choice is None:
             raise FaceSelectionSkipped("Photo skipped without choosing a face.")
-        if not isinstance(choice, (int, np.integer)) or not 0 <= choice < len(faces):
-            raise RuntimeError("Selected face is unavailable; result was not saved.")
-        return int(choice), faces
+        indices = face_choice_indices(choice,len(faces))
+        return indices[0] if len(indices) == 1 else indices, faces
 
     def preview(
         self,
@@ -1623,7 +1635,8 @@ class SwapEngine:
                         output_format=output_format, character_name=character_name,
                         preserve_mouth=preserve_mouth, destination_eyes=destination_eyes,
                         restoration_strength=restoration_strength, target_face_index=choice,
-                        target_face_box=faces[choice].bbox,
+                        target_face_box=(faces[choice].bbox if isinstance(choice,int) else
+                                         [faces[i].bbox for i in choice]),
                     )
                 if should_stop():
                     raise ProcessingCancelled("Stopped by user.")
@@ -1665,7 +1678,7 @@ class SwapEngine:
                     on_log("! Could not update batch history; this photo may run again later.")
                 outputs.append(str(output_path))
                 completed += 1
-                detail = (f"face {choice + 1} of {detected}" if choice is not None
+                detail = (face_choice_description(choice,detected) if choice is not None
                           else f"{swapped} of {detected} face(s)" if detected > 1 else "1 face")
                 on_log(f"✓ {target_path.name} → {output_path} ({detail})")
             except ProcessingCancelled:

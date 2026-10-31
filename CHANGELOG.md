@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-31
+
+### Fixed
+
+- Image canvases and long source/destination captions no longer increase the window's size requirements when media loads. Captions shorten to fit and retain the full text in tooltips.
+- Clip ranges are visibly greyed out while videos/GIFs are excluded or a photo is selected. Each clip keeps its own optional range; the defaults process the full clip.
+- Excluded videos/GIFs no longer start duration checks or show processing notices. Enabling them combines the one-face-per-clip explanation with any long-clip warnings in one popup.
+- About now links to longweekendlabs.app, GitHub and Feedback through the system browser, with the private application's library environment removed from the launched process.
+
+### Added
+
+- Select multiple numbered faces in the photo picker with ordinary clicks, including reflections. Preview/export/history use the chosen subset, and unselected faces stay untouched. Videos/GIFs continue to follow one selected face, with that limitation explained in their notice and picker.
+- Source-portrait guidance explaining useful framing, lighting and expression without introducing an arbitrary minimum pixel size.
+
 ## [0.6.2] - 2026-10-31
 
 ### Added

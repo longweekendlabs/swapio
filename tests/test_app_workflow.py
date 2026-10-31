@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import numpy as np
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,24 @@ QT_APP = QApplication.instance() or QApplication([])
 
 
 class AppWorkflowTests(unittest.TestCase):
+    @patch('app.read_state',return_value={})
+    @patch('app.core.missing_models',return_value=[])
+    def test_source_import_and_large_preview_cannot_raise_window_size_hints(self,*_):
+        window=app.MainWindow();window.resize(1000,670);window.show();QT_APP.processEvents()
+        before_size=window.size();before_hint=window.minimumSizeHint()
+        path=Path('/tmp')/('long-portrait-name-'+'x'*180+'.png')
+        with patch('app.core.load_image',return_value=np.zeros((3000,2000,3),np.uint8)),patch('app.native_image_files',return_value=[str(path)]):
+            window.source_button.click()
+        window.preview_view.set_image(np.zeros((2000,3000,3),np.uint8))
+        window.preview_caption.setText('very-long-destination-'+'z'*200+'.png')
+        for _ in range(12):QT_APP.processEvents()
+        self.assertEqual(window.size(),before_size)
+        self.assertLessEqual(window.minimumSizeHint().width(),before_hint.width())
+        self.assertLessEqual(window.minimumSizeHint().height(),before_hint.height())
+        self.assertFalse(window.isFullScreen());self.assertFalse(window.isMaximized())
+        self.assertIn('…',window.source_name.text());self.assertEqual(window.source_name.toolTip(),str(path))
+        window.close()
+
     def setUp(self):
         state_writer = patch("app.write_state")
         state_writer.start()

@@ -63,6 +63,36 @@ class FaceSelectionTests(unittest.TestCase):
         self.assertEqual(len(measured), 1)
         callback.assert_not_called()
 
+    def test_selected_subset_swaps_both_faces_and_leaves_the_third_untouched(self):
+        with tempfile.TemporaryDirectory() as root:
+            source,target=self.inputs(root)
+            core.write_image(target,np.zeros((60,150,3),np.uint8))
+            engine,faces=self.make_engine()
+            faces.append(SimpleNamespace(bbox=np.array([110,10,130,30])))
+            result=engine.preview(source,target,quality='fast',face_selector=lambda *_:[2,0])
+            self.assertEqual(result['target_face_index'],(0,2))
+            self.assertEqual((result['swapped'],result['detected']),(2,3))
+            self.assertEqual(int(result['image'][20,25,0]),50)
+            self.assertEqual(int(result['image'][20,120,0]),50)
+            self.assertEqual(int(result['image'][20,75,0]),0)
+            engine.analyser.get.assert_called_once()
+
+    def test_multiple_choice_history_is_order_independent_and_keeps_the_subset(self):
+        with tempfile.TemporaryDirectory() as root:
+            source,target=self.inputs(root);engine,_=self.make_engine()
+            output=Path(root)/'out'
+            def batch(choice):
+                return engine.batch(source,[target],output,quality='fast',face_selector=lambda *_:choice)
+            first,repeat,different=batch([0,1]),batch([1,0]),batch([1])
+            self.assertEqual((first['completed'],repeat['skipped'],different['completed']),(1,1,1))
+
+    def test_invalid_subset_never_falls_back_to_another_face(self):
+        engine,faces=self.make_engine()
+        for choice in [[],[0,2],[0,'1'],[True],[1.0]]:
+            with self.subTest(choice=choice),self.assertRaisesRegex(RuntimeError,'Selected face'):
+                engine.swap_array(np.zeros((60,100,3),np.uint8),object(),quality='fast',target_face_index=choice)
+        engine.swapper.get.assert_not_called()
+
     def test_batch_history_distinguishes_face_and_changed_detection(self):
         with tempfile.TemporaryDirectory() as root:
             source, target = self.inputs(root)
@@ -129,6 +159,27 @@ class FaceSelectionTests(unittest.TestCase):
         self.assertEqual(dialog.selected_index, 1)
         self.assertEqual(dialog.result(), app.QDialog.Accepted)
         dialog.close()
+
+    def test_photo_dialog_toggles_multiple_faces_without_ctrl(self):
+        dialog=app.FaceSelectionDialog('photo.png',np.zeros((60,100,3),np.uint8),[[5,5,45,45],[65,10,90,35]])
+        dialog.show();QT_APP.processEvents()
+        self.assertEqual(dialog.faces.selectedItems(),[])
+        for index in [0,1]:
+            rect=dialog.faces.visualItemRect(dialog.faces.item(index))
+            QTest.mouseClick(dialog.faces.viewport(),Qt.LeftButton,pos=rect.center())
+        self.assertEqual(len(dialog.faces.selectedItems()),2)
+        QTest.mouseClick(dialog.swap_button,Qt.LeftButton)
+        self.assertEqual(dialog.selected_index,(0,1));self.assertEqual(dialog.selected_indices,(0,1))
+        dialog.close()
+
+    def test_clip_dialog_keeps_single_selection_and_explains_photo_only_multiselect(self):
+        dialog=app.FaceSelectionDialog('clip.mp4',np.zeros((60,100,3),np.uint8),[[5,5,45,45],[65,10,90,35]],allow_multiple=False)
+        dialog.show();QT_APP.processEvents()
+        for index in [0,1]:
+            QTest.mouseClick(dialog.faces.viewport(),Qt.LeftButton,pos=dialog.faces.visualItemRect(dialog.faces.item(index)).center())
+        self.assertEqual(len(dialog.faces.selectedItems()),1)
+        QTest.mouseClick(dialog.swap_button,Qt.LeftButton)
+        self.assertEqual(dialog.selected_index,1);dialog.close()
 
     def test_stopping_worker_while_waiting_for_choice_unblocks(self):
         class Engine:
