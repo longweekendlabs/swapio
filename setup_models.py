@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import shutil
 import ssl
 import sys
@@ -15,7 +14,6 @@ from pathlib import Path
 from typing import Callable
 
 from version import APP_NAME, VERSION
-from source_models import SOURCE_COMPONENT, SOURCE_MODELS, SOURCE_MODEL_RELEASE
 
 PROJECT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = PROJECT_DIR / "models"
@@ -316,71 +314,6 @@ def install_face_parser(
         partial.unlink(missing_ok=True)
 
 
-def source_model_candidates(model_root: Path) -> list[Path]:
-    """Bounded local lookup, following Clipivo's shared-model discovery order."""
-    home = Path.home()
-    data = Path(os.environ.get("XDG_DATA_HOME", home / ".local/share"))
-    candidates = [model_root, PROJECT_DIR / "models", home / ".insightface/models",
-                  data / "long-weekend-labs/models"]
-    # Hugging Face stores files in repository snapshots. Do not recursively scan
-    # the user's home or archive; visit only this known model cache layout.
-    hub = Path(os.environ.get("HF_HUB_CACHE", home / ".cache/huggingface/hub"))
-    candidates.extend(sorted(hub.glob("models--*/snapshots/*")))
-    for root in (data, Path("/opt"), Path("/usr/share"), Path("/usr/local/share")):
-        try:
-            folders = sorted(child for child in root.iterdir() if child.is_dir())
-        except OSError:
-            continue
-        for folder in folders:
-            candidates.extend(folder / place for place in ("models", "_internal/models"))
-    if not getattr(sys, "frozen", False):
-        candidates.extend(sorted(PROJECT_DIR.parent.glob("*/models")))
-    return list(dict.fromkeys(candidates))
-
-
-def install_source_renderer(
-    model_root: Path = MODEL_DIR,
-    on_progress: ProgressFn = _noop_progress,
-    should_stop: StopFn = lambda: False,
-) -> None:
-    """Reuse verified source-appearance models, downloading only missing files."""
-    model_root.mkdir(parents=True, exist_ok=True)
-    candidates = source_model_candidates(model_root)
-    for filename, size, digest in SOURCE_MODELS.values():
-        if should_stop():
-            raise DownloadCancelled("Model setup cancelled.")
-        destination = model_root / filename
-        found = None
-        for folder in candidates:
-            candidate = folder / filename
-            try:
-                if candidate.is_file() and candidate.stat().st_size == size and sha256(candidate) == digest:
-                    found = candidate
-                    break
-            except OSError:
-                continue
-        if found is not None:
-            if found.resolve() != destination.resolve():
-                destination.unlink(missing_ok=True)
-                destination.symlink_to(found.resolve())
-            on_progress(SOURCE_COMPONENT, f"Verified {filename} at {found}", 1, 1)
-            continue
-        partial = destination.with_suffix(".onnx.part")
-        partial.unlink(missing_ok=True)
-        try:
-            download(SOURCE_MODEL_RELEASE + filename, partial, SOURCE_COMPONENT, on_progress, should_stop)
-            if should_stop():
-                raise DownloadCancelled("Model setup cancelled.")
-            on_progress(SOURCE_COMPONENT, f"Verifying {filename}", 0, 0)
-            if partial.stat().st_size != size or sha256(partial) != digest:
-                raise RuntimeError(f"Downloaded {filename} size or checksum did not match.")
-            # Replacing a bad symlink must not overwrite a shared model's bytes.
-            partial.replace(destination)
-            on_progress(SOURCE_COMPONENT, f"Installed and verified {destination}", 1, 1)
-        finally:
-            partial.unlink(missing_ok=True)
-
-
 def install_all(
     model_root: Path = MODEL_DIR,
     on_progress: ProgressFn = _noop_progress,
@@ -404,7 +337,6 @@ def install_all(
     if should_stop():
         raise DownloadCancelled("Model download cancelled.")
     install_face_parser(model_root, on_progress, should_stop)
-    install_source_renderer(model_root, on_progress, should_stop)
 
 
 def main() -> int:

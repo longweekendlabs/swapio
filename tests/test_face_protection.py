@@ -186,20 +186,6 @@ class FaceProtectionTests(unittest.TestCase):
         )
         self.assertIsNotNone(obscured)
 
-    def test_dark_open_cavity_does_not_trigger_copying_the_entire_target_lips(self):
-        labels = np.zeros((128, 128), np.uint8)
-        labels[20:25, 20:60] = 12
-        labels[25:40, 20:60] = 11
-        labels[40:45, 20:60] = 13
-        landmarks = np.zeros((106, 2), np.float32)
-        landmarks[52:72] = np.tile([[20, 20], [60, 20], [60, 45], [20, 45]], (5, 1))
-        visibility = np.ones(labels.shape, np.float32)
-        visibility[labels == 11] = 0
-        matrix = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
-        self.assertIsNone(core.SwapEngine._expression_mask_from_labels(labels, landmarks, visibility, matrix))
-        visibility[20:45, 20:35] = 0  # object crossing a substantial lip segment
-        self.assertIsNotNone(core.SwapEngine._expression_mask_from_labels(labels, landmarks, visibility, matrix))
-
     def test_mouth_parser_rejects_invalid_output_before_compositing(self):
         engine = core.SwapEngine()
         engine.face_parser = SimpleNamespace(run=lambda *_: [np.full((1, 19, 512, 512), np.nan)])

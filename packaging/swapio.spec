@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
-import runpy
 from pathlib import Path
 
 project_root = Path(SPECPATH).parent
@@ -19,8 +18,6 @@ if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
         project_root / "models/xseg_1.onnx",
         project_root / "models/bisenet_resnet_18.onnx",
     ]
-    source_models = runpy.run_path(str(project_root / "source_models.py"))["SOURCE_MODELS"]
-    required.extend(project_root / "models" / spec[0] for spec in source_models.values())
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise SystemExit("Cannot bundle models; missing: " + ", ".join(missing))

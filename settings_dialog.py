@@ -68,9 +68,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(gpu)
         note = QLabel(
             "Changing this preference takes effect after restarting Swapio. "
-            "Source appearance, pose estimation and face generation use CUDA when available, "
-            "with checked CPU fallback. Careful allows up to two generation passes; Best "
-            "allows three. Small retargeting steps and image compositing use the CPU."
+            "Swapping and restoration use CUDA when available, with checked CPU fallback. "
+            "For smaller faces, Careful and Best compare source likeness across two models. "
+            "Careful limits restoration and automatically adjusts sampling for close-up faces."
         )
         note.setWordWrap(True)
         note.setObjectName("aboutFinePrint")
@@ -94,7 +94,7 @@ class SettingsDialog(QDialog):
             status = QLabel("○ Missing: " + ", ".join(missing))
             button_text = "Download missing core models…"
         else:
-            status = QLabel("✓ Face analysis, source rendering, draft swappers and protection models are installed")
+            status = QLabel("✓ Detector, identity encoder and both face swappers are installed")
             button_text = "Review core model setup…"
         status.setWordWrap(True)
         status.setObjectName("aboutDescription")

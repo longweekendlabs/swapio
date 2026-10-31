@@ -26,19 +26,21 @@ Repeat a batch and it processes only new or changed photos by default. A photo t
 
 ## Four quality modes, and they mean something
 
-Careful is the default. It renders your source face in the destination's pose and expression, then projects real eye detail from the reference photo into that face. The reference eye-detail slider controls how much of that texture is retained and starts at 100%.
+Careful is the default. For smaller faces, it compares two replacements against your source portrait and chooses the closer match when the difference is clear. When their likeness is similar, it keeps the more detailed rendering. Larger faces keep the detail model to protect close-up eye detail. Sampling adjusts to the face size.
 
-Careful allows up to two generation passes, and Best allows up to three. Extra passes adjust eye and mouth opening and are kept only when they improve it. Both retain the source appearance throughout. Balanced and Fast use the older models for drafts. Pose and expression remain approximate, especially with obstructed faces.
+Stronger replacements receive limited detail restoration, checked again against the source to avoid repainting the identity. The detailed rendering retains local eye recovery with stable eyelid geometry; tilted heads are checked in an upright crop. The restoration slider limits both kinds of recovery, and setting it to zero disables them.
 
-On an NVIDIA machine, face analysis, source appearance, pose estimation and generation can use CUDA, with checked CPU fallback if inference fails. Small adjustment models, protection masks and image compositing use the CPU. Switching between draft and source rendering releases the inactive generators' GPU memory.
+Best adds whole-face restoration, which can also change eyes and lips. Balanced uses fewer samples, and Fast is available for drafts. These modes cannot guarantee an exact likeness or recover every detail in a close-up.
+
+On an NVIDIA machine, detection, both face models and face restoration can use CUDA. The detail model uses conservative GPU settings to avoid invalid output, and automatically retries on CPU if CUDA fails. Restoration also has a checked CPU fallback.
 
 ## What it preserves
 
 Swapio replaces facial features within the destination photo. The body, hair, background and image dimensions stay. The models aim to retain pose and expression, but can change eyebrows, eyelids and lips. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.
 
-Mouth protection recovers teeth and inner-mouth detail while retaining generated source lips in ordinary open mouths. Turn it off for source mouth replacement, including real reference upper-tooth detail when the visible rows and pose permit. Tongues and objects can require the surrounding target lips too when protection is on. Foreground protection helps retain objects and hair crossing the face.
+Mouth protection keeps the target's open or obstructed expression together, including lips, teeth and tongue. Closed, unobstructed lips stay generated. Foreground protection helps retain objects and hair crossing the face.
 
-Target-eye preservation is off by default. Careful and Best use source-guided eyes and reference eye detail with it off. Enabling it instead retains the target's eyes, eyelids, lashes and iris colour. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
+Target-eye preservation is off by default. Enabling it copies the target's eye interiors and eye colour into the swapped face. Leaving it off uses generated eyes, whose colour is not guaranteed to match the source exactly. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
 
 ## Download
 

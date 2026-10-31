@@ -20,37 +20,6 @@ QT_APP = QApplication.instance() or QApplication([])
 class AppWorkflowTests(unittest.TestCase):
     @patch("app.core.missing_models", return_value=[])
     @patch("app.write_state")
-    def test_reference_detail_has_its_own_preference_and_draft_modes_disable_it(self, write, _missing):
-        for state, expected in (({"restoration_strength": 50}, 100), ({"reference_detail_strength": 0}, 0)):
-            with self.subTest(state=state), patch("app.read_state", return_value=state):
-                window = app.MainWindow()
-                self.assertEqual(window.restoration_strength.value(), expected)
-                self.assertTrue(window.restoration_strength.isEnabled())
-                window.quality_mode.setCurrentIndex(window.quality_mode.findData("balanced"))
-                self.assertFalse(window.restoration_strength.isEnabled())
-                window.quality_mode.setCurrentIndex(window.quality_mode.findData("careful"))
-                window.destination_eyes.setChecked(True)
-                self.assertFalse(window.restoration_strength.isEnabled())
-                window.destination_eyes.setChecked(False)
-                self.assertTrue(window.restoration_strength.isEnabled())
-                window._save_state()
-                self.assertEqual(write.call_args.args[0]["reference_detail_strength"], expected)
-                window.close()
-
-    @patch("app.core.missing_models", return_value=[])
-    @patch("app.read_state", return_value={})
-    @patch("app.write_state")
-    def test_processing_log_refreshes_actual_device_before_render_finishes(self, _write, _read, _missing):
-        window = app.MainWindow()
-        window.engine.provider = "CUDA + CPU"
-        window._processing_log("Source generator ready on CPU after CUDA failure.")
-        self.assertIn("CUDA + CPU", window.model_status.text())
-        self.assertIn("compositing use CPU", window.model_status.toolTip())
-        self.assertIn("CUDA failure", window.log.toPlainText())
-        window.close()
-
-    @patch("app.core.missing_models", return_value=[])
-    @patch("app.write_state")
     @patch("app.read_state", return_value={"skin_tone_match": True, "skin_tone_strength": 100})
     def test_retired_skin_tone_settings_cannot_reactivate_feature(self, _read, write, _missing):
         window = app.MainWindow()
