@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Recover generated eye texture at smaller sizes too, and reuse restoration detail in Careful and Best instead of leaving blurred lids in partially restored faces.
+- Target-eye preservation now includes eyelids and lashes instead of keeping sharp eyeballs inside blurred generated lids.
 - Restore CUDA quality swapping with conservative GPU kernel settings and a checked CPU retry for invalid output or GPU failures.
 - Pin the face-analysis library to the compatible release so CUDA installations do not also pull in a conflicting CPU runtime.
 - Prepare inference-library imports before Qt to avoid slow first-preview imports in the worker thread.

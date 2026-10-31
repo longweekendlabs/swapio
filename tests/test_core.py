@@ -72,7 +72,9 @@ class CoreTests(unittest.TestCase):
                 original = np.full_like(swapped, 240)
                 result = core.SwapEngine()._destination_eyes(swapped, original, face, face)
                 self.assertGreater(int(result[40 * scale, 40 * scale, 0]), 225)
-                self.assertEqual(int(result[34 * scale, 40 * scale, 0]), 100)
+                # Preserve lid/lash texture too; brows remain outside the patch.
+                self.assertGreater(int(result[34 * scale, 40 * scale, 0]), 225)
+                self.assertEqual(int(result[20 * scale, 40 * scale, 0]), 100)
 
     def test_feature_geometry_does_not_treat_tilted_closed_eye_as_open(self):
         points = np.array([[10, 20], [20, 20], [30, 20], [40, 20]], np.float32)
@@ -281,7 +283,8 @@ class CoreTests(unittest.TestCase):
             order.append("swap")
             return target + 1
 
-        def fake_restore(swapped, _face, _strength=0.5, _on_log=core._noop):
+        def fake_restore(swapped, _face, _strength=0.5, _on_log=core._noop, _reference=None):
+            self.assertIsNotNone(_reference)
             order.append("restore")
             return swapped + 10
 

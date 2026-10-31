@@ -33,6 +33,7 @@ class IdentitySelectionTests(unittest.TestCase):
             self.assertTrue(selected)
             self.assertIs(result, self.restored)
             self.assertEqual(engine._restore_face.call_args.args[2], min(limit, 0.35))
+            self.assertIs(engine._restore_face.call_args.args[4], self.target)
             self.assertEqual(engine._inswapper_face.call_args.args[3], 256)
 
     def test_close_scores_keep_existing_detailed_rendering(self):

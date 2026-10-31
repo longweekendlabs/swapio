@@ -76,7 +76,7 @@ class FaceProtectionTests(unittest.TestCase):
         np.testing.assert_array_equal(face.landmark_2d_106, original_points)
         np.testing.assert_array_equal(placed.bbox, face.bbox)
 
-    def test_eye_detail_skips_small_eyes_and_zero_strength(self):
+    def test_eye_detail_skips_missing_texture_and_zero_strength(self):
         points = self.eye_landmarks()
         image = np.full((100, 120, 3), 100, np.uint8)
         for limit in (0, 0.5):

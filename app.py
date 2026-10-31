@@ -752,12 +752,12 @@ class MainWindow(QMainWindow):
         self.preserve_mouth.stateChanged.connect(self._save_state)
         grid.addWidget(mouth_label, 4, 0)
         grid.addWidget(self.preserve_mouth, 4, 1)
-        eyes_label = QLabel("Eyeballs")
+        eyes_label = QLabel("Eye detail")
         eyes_label.setObjectName("fieldLabel")
         self.destination_eyes = QCheckBox("Keep target eyes and target eye colour")
         self.destination_eyes.setChecked(False)
         self.destination_eyes.setToolTip(
-            "Optional: copy the target photo's eye interiors into the swapped face, "
+            "Optional: retain the target photo's eyes, eyelids and lashes in the swapped face, "
             "including the target's iris colour. Leave off to keep the model-generated "
             "eyes. The model does not guarantee an exact source iris-colour match."
         )
@@ -775,7 +775,8 @@ class MainWindow(QMainWindow):
         self.restoration_strength.setToolTip(
             "Careful: limits eye-detail recovery and detail restoration on stronger "
             "face replacements. Whole-face restoration is capped at 35% and checked "
-            "against source likeness. Best: whole-face restoration strength. "
+            "against source likeness. Best: whole-face restoration with checked local "
+            "eye-detail recovery. Eye recovery adapts automatically to the face size. "
             "Set to 0 to disable restoration."
         )
         self.restoration_value = QLabel()

@@ -27,7 +27,7 @@ ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 OCCLUDER_MODEL = "xseg_1.onnx"
 FACE_PARSER_MODEL = "bisenet_resnet_18.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 18
+PROCESSING_REVISION = 19
 # Require a clear gain before trading the detail model for the identity model.
 # Close scores keep the existing rendering rather than oscillating between models.
 MIN_IDENTITY_GAIN = 0.035
@@ -648,14 +648,15 @@ class SwapEngine:
                                       (RIGHT_EYE_106_INDICES, np.arange(87, 106))):
             eye, placed = before[indices], after[indices]
             width, opening = SwapEngine._feature_geometry(eye)
-            if width < 48 or opening / width < 0.10:
+            if width < 4 or opening / width < 0.10:
                 continue
             reference = SwapEngine._detail_score(original, eye)
             existing = SwapEngine._detail_score(rendered, eye)
             rebuilt = SwapEngine._detail_score(restored, placed)
             deficit = 1.0 - existing / max(reference, 0.001)
             movement = float(np.mean(np.linalg.norm(placed - eye, axis=1)))
-            if deficit < 0.25 or rebuilt < existing * 1.15 or movement > width * 0.03:
+            if (reference <= 0.001 or rebuilt <= 0.001 or deficit < 0.25
+                    or rebuilt < existing * 1.15 or movement > width * 0.03):
                 continue
             strength = min(float(np.clip(limit, 0, 1)), deficit * 1.3)
             if strength <= 0:
@@ -770,7 +771,7 @@ class SwapEngine:
                 reference_width, reference_opening = self._feature_geometry(reference_points[indices])
                 if reference_width <= 0 or reference_opening / reference_width < 0.10:
                     continue
-            if (width >= 48 and opening / width >= 0.10
+            if (width >= 4 and opening / width >= 0.10
                     and self._detail_score(rendered, eye) < self._detail_score(original, eye) * 0.75):
                 needs_detail = True
         if not needs_detail:
@@ -997,7 +998,7 @@ class SwapEngine:
         if quality == "careful" and restoration_strength > 0:
             restored = self._restore_face(
                 alternate, target_face,
-                min(restoration_strength, IDENTITY_RESTORATION_LIMIT), on_log,
+                min(restoration_strength, IDENTITY_RESTORATION_LIMIT), on_log, target,
             )
             restored_score = self._source_similarity(restored, target_face, source_face)
             if restored_score is not None and restored_score >= primary_score + MIN_IDENTITY_GAIN:
@@ -1098,6 +1099,7 @@ class SwapEngine:
         target_face,
         strength: float = DEFAULT_RESTORATION_STRENGTH,
         on_log: LogFn = _noop,
+        detail_reference: np.ndarray | None = None,
     ):
         """Rebuild eye, lash and tooth detail the 256px swapper cannot resolve."""
         strength = float(np.clip(strength, 0.0, 1.0))
@@ -1131,7 +1133,22 @@ class SwapEngine:
         # Keep a little of the swapped crop so restoration sharpens the face
         # instead of repainting it.
         blended = cv2.addWeighted(crop, 1.0 - strength, restored, strength, 0.0)
-        return self._paste_restored(swapped, blended, matrix)
+        result = self._paste_restored(swapped, blended, matrix)
+        if detail_reference is not None and strength < 1.0:
+            # Reuse this prediction: a partially blended whole face still mixes
+            # coarse swapper pixels into the lids/lashes. Recover local texture
+            # from the full prediction without another restoration inference.
+            frame = self._eye_landmark_frame(detail_reference, target_face)
+            before = self._eye_landmarks(result, target_face, frame)
+            full = self._paste_restored(swapped, restored, matrix)
+            after = self._eye_landmarks(full, target_face, frame)
+            result, count = self._eye_detail_blend(
+                detail_reference, result, full,
+                getattr(before, "landmark_2d_106", None),
+                getattr(after, "landmark_2d_106", None), strength,
+            )
+            on_log(f"Restored eye detail: accepted {count} eye region(s) after detail/geometry checks.")
+        return result
 
     def _landmarks_after_swap(self, image: np.ndarray, target_face):
         """Measure the final features without mutating the original face."""
@@ -1170,7 +1187,8 @@ class SwapEngine:
         return width, float(np.ptp(points @ normal))
 
     @staticmethod
-    def _feature_mask(shape, points: np.ndarray, opening: float) -> np.ndarray:
+    def _feature_mask(shape, points: np.ndarray, opening: float,
+                      include_eyelids: bool = False) -> np.ndarray:
         """Feather inward, keeping all original pixels inside the contour."""
         mask = np.zeros(shape, dtype=np.uint8)
         # Eyelid indices are not in perimeter order. Sort around the centre,
@@ -1178,10 +1196,19 @@ class SwapEngine:
         centred = points - points.mean(axis=0)
         order = np.argsort(np.arctan2(centred[:, 1], centred[:, 0]))
         cv2.fillPoly(mask, [np.rint(points[order]).astype(np.int32)], 1)
+        if include_eyelids:
+            # Eye preservation includes lids/lashes, not just the eyeball.
+            # Scale the support to the measured contour, keeping brows and
+            # the rest of the face outside this local composite.
+            width, _ = SwapEngine._feature_geometry(points)
+            radius = max(round(width * 0.18), 1)
+            mask = cv2.dilate(mask, cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1),
+            ))
         distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
         # Width-based erosion erased narrow eyes. The opening sets the blend
         # here, and clipping the distance mask avoids spilling onto lips/lids.
-        feather = max(opening * 0.18, 1.0)
+        feather = max(width * 0.08 if include_eyelids else opening * 0.18, 1.0)
         soft = np.clip((distance - 0.5) / feather, 0.0, 1.0)
         return soft * soft * (3.0 - 2.0 * soft)
 
@@ -1193,6 +1220,7 @@ class SwapEngine:
         placed_face,
         indices: np.ndarray,
         minimum_opening: float,
+        include_eyelids: bool = False,
     ) -> np.ndarray:
         if placed_face is None:
             return swapped
@@ -1226,9 +1254,9 @@ class SwapEngine:
             original, matrix, (image_width, height),
             flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE,
         )
-        source_mask = SwapEngine._feature_mask(original.shape[:2], source, source_opening)
+        source_mask = SwapEngine._feature_mask(original.shape[:2], source, source_opening, include_eyelids)
         source_mask = cv2.warpAffine(source_mask, matrix, (image_width, height))
-        destination_mask = SwapEngine._feature_mask(swapped.shape[:2], destination, opening)
+        destination_mask = SwapEngine._feature_mask(swapped.shape[:2], destination, opening, include_eyelids)
         # Both masks must agree: do not copy target lips/skin into a changed
         # opening, even when the source and generated shapes differ.
         mask = np.minimum(source_mask, destination_mask)[:, :, None]
@@ -1238,10 +1266,10 @@ class SwapEngine:
         ).clip(0, 255).astype(np.uint8)
 
     def _destination_eyes(self, swapped, target, target_face, placed_face):
-        """Register original eye interiors to the final swapped eyelids."""
+        """Keep the target's eye texture, including eyelids and lashes."""
         for indices in (LEFT_EYE_106_INDICES, RIGHT_EYE_106_INDICES):
             swapped = self._preserve_feature(
-                swapped, target, target_face, placed_face, indices, 0.12
+                swapped, target, target_face, placed_face, indices, 0.12, True,
             )
         return swapped
 
@@ -1284,7 +1312,7 @@ class SwapEngine:
 
             def finish(rendered, identity_selected):
                 if quality == "best":
-                    rendered = self._restore_face(rendered, face, restoration_strength, on_log)
+                    rendered = self._restore_face(rendered, face, restoration_strength, on_log, target)
                 elif quality == "careful" and not identity_selected:
                     rendered = self._adaptive_eye_detail(rendered, target, face, restoration_strength, on_log)
                 if destination_eyes or (preserve_mouth and mouth_protection is None):
