@@ -261,6 +261,26 @@ def native_open_path(path: Path) -> bool:
     return False
 
 
+def notify_output_folder(path: Path) -> bool:
+    """Tell KDE directory views about completed writes, including atomic renames."""
+    if not sys.platform.startswith("linux"):
+        return True
+    try:
+        from PySide6.QtDBus import QDBusConnection, QDBusMessage
+
+        folder = path.expanduser().resolve()
+        if not folder.is_dir():
+            return False
+        bus = QDBusConnection.sessionBus()
+        if not bus.isConnected():
+            return False
+        message = QDBusMessage.createSignal("/", "org.kde.KDirNotify", "FilesAdded")
+        message.setArguments([QUrl.fromLocalFile(str(folder)).toString()])
+        return bus.send(message)
+    except (ImportError, OSError, RuntimeError):
+        return False
+
+
 def pixmap_from_bgr(image, maximum: int = 900) -> QPixmap:
     height, width = image.shape[:2]
     scale = min(maximum / max(width, height), 1.0)
@@ -1091,6 +1111,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Output folder", f"Could not create the output folder:\n{exc}")
             return
         self.last_output = output
+        self._notified_saved = 0
         self.log.clear()
         self.progress.setRange(0, len(self.targets))
         self.progress.setValue(0)
@@ -1123,6 +1144,10 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _progress(self, done: int, total: int, counts: dict):
+        completed = counts.get("completed", 0)
+        if completed > getattr(self, "_notified_saved", 0) and self.last_output:
+            self._notified_saved = completed
+            notify_output_folder(self.last_output)
         self.progress.setMaximum(total)
         self.progress.setValue(done)
         self.progress.setFormat(
@@ -1131,6 +1156,11 @@ class MainWindow(QMainWindow):
         )
 
     def _batch_ready(self, result: dict):
+        if result["outputs"] and self.last_output:
+            if not notify_output_folder(self.last_output):
+                self.log.appendPlainText(
+                    f"Saved files are on disk, but the desktop folder update could not be sent: {self.last_output}"
+                )
         self._set_running(False)
         self.open_button.setEnabled(bool(result["outputs"]) or result["skipped"] > 0)
         label = "Stopped" if result["stopped"] else "Complete"
@@ -1386,6 +1416,19 @@ def main():
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     app.setFont(QFont("Inter", 10))
+    if "--self-test-output" in sys.argv:
+        import argparse
+
+        parser = argparse.ArgumentParser(description="Check a saved PNG and desktop folder notification.")
+        parser.add_argument("--self-test-output", type=Path, required=True, metavar="FOLDER")
+        args = parser.parse_args()
+        output = core.unique_output_path(args.self_test_output.resolve(), Path("swapio-output-check.png"), suffix=".png")
+        core.write_image(output, np.full((32, 32, 3), (60, 122, 255), np.uint8))
+        notified = notify_output_folder(output.parent)
+        print(json.dumps({"version": VERSION, "output": str(output), "desktop_notified": notified}), flush=True)
+        QTimer.singleShot(100, app.quit)
+        app.exec()
+        sys.exit(0 if notified else 1)
     window = MainWindow()
     window.show()
     if core.missing_models():

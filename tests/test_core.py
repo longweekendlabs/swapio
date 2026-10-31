@@ -241,6 +241,27 @@ class CoreTests(unittest.TestCase):
             third = engine.batch(source, [target], output, quality="fast")
             self.assertEqual((third["completed"], third["skipped"]), (1, 0))
 
+    def test_missing_or_empty_saved_file_is_failed_without_a_completion_record(self):
+        from unittest.mock import patch
+
+        for empty_file in (False, True):
+            with self.subTest(empty_file=empty_file), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp); source = root / "source.png"; target = root / "target.png"
+                Image.new("RGB", (16, 16), "white").save(source)
+                Image.new("RGB", (16, 16), "navy").save(target)
+                engine = core.SwapEngine()
+                engine.source_face = lambda *_args, **_kwargs: object()
+                engine.swap_array = lambda image, *_args, **_kwargs: (image, 1, 1)
+                def broken_write(path, *_args, **_kwargs):
+                    if empty_file:
+                        path.touch()
+                with patch("core.write_image", side_effect=broken_write):
+                    result = engine.batch(source, [target], root / "output", quality="fast")
+                self.assertEqual((result["completed"], result["failed"]), (0, 1))
+                self.assertEqual(result["outputs"], [])
+                self.assertIn("missing or empty", result["errors"][0]["error"])
+                self.assertFalse((root / "output" / core.HISTORY_FILENAME).exists())
+
     def test_changing_mouth_preservation_reruns_completed_photo(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Notify KDE file-manager views after saved photos and again at batch completion, so missed filesystem updates do not leave Dolphin showing an empty output folder.
+- Log full output paths and reject missing or empty output files before reporting them saved.
 - Revert the rejected source-appearance renderer and restore the previous face-swap pipeline, restoration slider, and mouth handling. Existing CUDA fixes remain. Previous experimental outputs are eligible for reprocessing.
 - Recover generated eye texture at smaller sizes too, and reuse restoration detail in Careful and Best instead of leaving blurred lids in partially restored faces.
 - Target-eye preservation now includes eyelids and lashes instead of keeping sharp eyeballs inside blurred generated lids.

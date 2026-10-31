@@ -18,6 +18,28 @@ QT_APP = QApplication.instance() or QApplication([])
 
 
 class AppWorkflowTests(unittest.TestCase):
+    @patch("app.QMessageBox.information")
+    @patch("app.notify_output_folder", return_value=True)
+    @patch("app.core.missing_models", return_value=[])
+    @patch("app.write_state")
+    @patch("app.read_state", return_value={})
+    def test_new_saves_notify_desktop_and_completion_retries_without_notifying_each_skip(
+        self, _read, _write, _missing, notify, _dialog
+    ):
+        window = app.MainWindow()
+        with tempfile.TemporaryDirectory() as temp:
+            window.last_output = Path(temp)
+            window._notified_saved = 0
+            window._progress(1, 3, {"completed": 1, "skipped": 0, "failed": 0})
+            window._progress(2, 3, {"completed": 1, "skipped": 1, "failed": 0})
+            self.assertEqual(notify.call_count, 1)
+            window._progress(3, 3, {"completed": 2, "skipped": 1, "failed": 0})
+            window._batch_ready({"total": 3, "completed": 2, "skipped": 1, "failed": 0,
+                                 "outputs": [str(Path(temp) / "saved.png")], "stopped": False})
+            self.assertEqual(notify.call_count, 3)
+            self.assertTrue(all(call.args == (Path(temp),) for call in notify.call_args_list))
+        window.close()
+
     @patch("app.core.missing_models", return_value=[])
     @patch("app.write_state")
     @patch("app.read_state", return_value={"skin_tone_match": True, "skin_tone_strength": 100})

@@ -12,6 +12,29 @@ import app
 
 
 class NativeDialogTests(unittest.TestCase):
+    @patch("PySide6.QtDBus.QDBusConnection.sessionBus")
+    def test_saved_folder_notification_matches_kde_protocol(self, session_bus):
+        from PySide6.QtCore import QUrl
+
+        bus = session_bus.return_value
+        bus.isConnected.return_value = True
+        bus.send.return_value = True
+        with tempfile.TemporaryDirectory(prefix="swapio folder #") as temp:
+            self.assertTrue(app.notify_output_folder(Path(temp)))
+            message = bus.send.call_args.args[0]
+            self.assertEqual(message.path(), "/")
+            self.assertEqual(message.interface(), "org.kde.KDirNotify")
+            self.assertEqual(message.member(), "FilesAdded")
+            self.assertEqual(QUrl(message.arguments()[0]).toLocalFile(), temp)
+
+    @patch("PySide6.QtDBus.QDBusConnection.sessionBus")
+    def test_disconnected_desktop_notification_does_not_raise(self, session_bus):
+        bus = session_bus.return_value
+        bus.isConnected.return_value = False
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertFalse(app.notify_output_folder(Path(temp)))
+        bus.send.assert_not_called()
+
     @patch.object(sys, "frozen", True, create=True)
     @patch.dict(
         os.environ,

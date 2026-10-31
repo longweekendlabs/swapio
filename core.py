@@ -1458,6 +1458,7 @@ class SwapEngine:
             f"Processing {total} destination photo(s) at {detail}. "
             "Originals stay untouched."
         )
+        on_log(f"Output folder: {output_dir}")
         for index, (target_path, key) in enumerate(keyed_targets, start=1):
             if should_stop():
                 on_log("Stopped by user.")
@@ -1511,13 +1512,15 @@ class SwapEngine:
                     name_prefix=character_name,
                 )
                 write_image(output_path, result, metadata_source=target_path)
+                if not output_path.is_file() or output_path.stat().st_size == 0:
+                    raise OSError(f"Saved image is missing or empty: {output_path}")
                 if not history.record(key, target_path, output_path):
                     on_log("! Could not update batch history; this photo may run again later.")
                 outputs.append(str(output_path))
                 completed += 1
                 detail = (f"face {choice + 1} of {detected}" if choice is not None
                           else f"{swapped} of {detected} face(s)" if detected > 1 else "1 face")
-                on_log(f"✓ {target_path.name} → {output_path.name} ({detail})")
+                on_log(f"✓ {target_path.name} → {output_path} ({detail})")
             except ProcessingCancelled:
                 cancelled = True
                 on_log("Stopped by user.")
