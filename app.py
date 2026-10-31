@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Swapio - local face swapping for photos and short videos."""
+"""Swapio - local face swapping for photos, short videos and GIFs."""
 from __future__ import annotations
 
 import json
@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import core
 import video_core as video
+import gif_core as gif
 from media_tools import native_process_environment
 
 # Load the inference library before Qt installs its Python import feature hook.
@@ -62,6 +63,7 @@ from model_setup_dialog import ModelSetupDialog
 from settings_dialog import SettingsDialog
 from version import APP_NAME, GITHUB_URL, VERSION, TAGLINE
 
+MOTION_EXTENSIONS = video.VIDEO_EXTENSIONS | gif.GIF_EXTENSIONS
 PROJECT_DIR = core.base_dir()
 ICON_PATH = PROJECT_DIR / "assets" / "swapio.svg"
 
@@ -173,7 +175,7 @@ def native_video_files(parent, title: str, start: str, multiple: bool = True) ->
 
 
 def native_media_files(parent, title: str, start: str, multiple: bool = True) -> list[str]:
-    patterns = ' '.join('*'+ext for ext in sorted(core.IMAGE_EXTS | video.VIDEO_EXTENSIONS))
+    patterns = ' '.join('*'+ext for ext in sorted(core.IMAGE_EXTS | MOTION_EXTENSIONS))
     return native_image_files(parent,title,start,multiple,patterns+'|Photos and videos')
 
 
@@ -496,7 +498,8 @@ class DurationWorker(QThread):
             if self.isInterruptionRequested():
                 return
             try:
-                results[str(path)] = video.probe(path, should_stop=self.isInterruptionRequested)[0]
+                results[str(path)] = (gif.probe(path, self.isInterruptionRequested) if path.suffix.lower() in gif.GIF_EXTENSIONS
+                    else video.probe(path, should_stop=self.isInterruptionRequested)[0])
             except core.ProcessingCancelled:
                 return
             except Exception as exc:
@@ -526,7 +529,8 @@ class MediaWorker(TaskWorker):
                 if choice is None and not self._stop:
                     raise core.FaceSelectionSkipped()
                 return choice
-            selection = video.choose_person(self.video_engine, path, start, end, select, lambda: self._stop)
+            transport = gif if path.suffix.lower() in gif.GIF_EXTENSIONS else video
+            selection = transport.choose_person(self.video_engine, path, start, end, select, lambda: self._stop)
             self.video_selections[str(path)] = selection
             self.person_selected.emit(str(path), selection)
         return selection
@@ -541,7 +545,7 @@ class MediaWorker(TaskWorker):
                     result['stopped'] = True
                     break
                 try:
-                    if path.suffix.lower() in video.VIDEO_EXTENSIONS:
+                    if path.suffix.lower() in MOTION_EXTENSIONS:
                         self.engine.release_models()
                         if self.video_engine is None:
                             self.video_engine = video.VideoSwapEngine(models=self.engine.models,
@@ -553,7 +557,8 @@ class MediaWorker(TaskWorker):
                             self.video_progress.emit(done, total, {**counts, 'media_index':index+1,
                                 'media_total':result['total'], 'name':path.name})
                         preview = self.mode == 'video_preview'
-                        item = video.render_video(self.video_engine, self.kwargs['source_path'], path,
+                        render = gif.render_gif if path.suffix.lower() in gif.GIF_EXTENSIONS else video.render_video
+                        item = render(self.video_engine, self.kwargs['source_path'], path,
                             self.kwargs['output_dir'], selection, start=start, end=end, preview=preview,
                             character_name=self.kwargs['character_name'],
                             preserve_mouth=self.kwargs['preserve_mouth'],
@@ -790,8 +795,8 @@ class MainWindow(QMainWindow):
         self.target_count.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
         count_row = QHBoxLayout()
         count_row.addWidget(self.target_count,1)
-        self.include_videos = QCheckBox('Include videos')
-        self.include_videos.setToolTip('Enable queued videos. When any are included, all media uses Careful quality.')
+        self.include_videos = QCheckBox('Include videos / GIFs')
+        self.include_videos.setToolTip('Enable queued videos and GIF animations. When any are included, all media uses Careful quality.')
         self.include_videos.toggled.connect(self._include_videos_changed)
         count_row.addWidget(self.include_videos)
         destinations_footer_layout.addLayout(count_row)
@@ -824,7 +829,7 @@ class MainWindow(QMainWindow):
             spin.setSingleStep(.5)
             spin.valueChanged.connect(self._trim_changed)
         self.video_end.setSpecialValueText('End of clip')
-        trim.addWidget(QLabel('Video from'))
+        trim.addWidget(QLabel('Clip from'))
         trim.addWidget(self.video_start,1)
         trim.addWidget(QLabel('to'))
         trim.addWidget(self.video_end,1)
@@ -878,7 +883,7 @@ class MainWindow(QMainWindow):
         faces_label.setObjectName("fieldLabel")
         self.face_mode = QComboBox()
         self.face_mode.addItems(["Swap the largest face only", "Swap every detected face"])
-        self.face_mode.setToolTip("Photo face selection. Videos follow one person; multiple-person clips always ask you to choose.")
+        self.face_mode.setToolTip("Photo face selection. Videos and GIFs follow one person; multiple-person clips always ask you to choose.")
         self.face_mode.currentIndexChanged.connect(self._save_state)
         self.permission = QCheckBox("I have permission to edit")
         self.permission.stateChanged.connect(self._refresh_controls)
@@ -887,7 +892,7 @@ class MainWindow(QMainWindow):
         self.ask_face.setToolTip(
             "Choose one face per photo using numbered thumbnails. Single-face photos "
             "continue automatically. Overrides the largest/every-face setting while enabled. "
-            "Choices are remembered during this session. Multiple-person videos always ask you to choose one person."
+            "Choices are remembered during this session. Multiple-person videos and GIFs always ask you to choose one person."
         )
         self.ask_face.toggled.connect(self._face_selection_changed)
         self.reset_faces_button = QPushButton("Reset face choices")
@@ -917,8 +922,11 @@ class MainWindow(QMainWindow):
         self.output_format.addItem("JPEG 98 — smaller, re-encodes the image", "jpg")
         self.output_format.addItem("Lossless PNG — unchanged pixels stay exact", "png")
         self.output_format.addItem('MP4 video · audio kept', 'mp4')
-        self.output_format.model().item(2).setEnabled(False)
-        self.output_format.setToolTip("Choose photo output here. Videos always export MP4 with audio when present.")
+        self.output_format.addItem('GIF animation · loop kept', 'gif')
+        self.output_format.addItem('MP4 / GIF · follows input format', 'motion')
+        for index in (2,3,4):
+            self.output_format.model().item(index).setEnabled(False)
+        self.output_format.setToolTip("Choose photo output here. Videos export MP4 with audio when present; GIFs stay GIF animations.")
         self.output_format.currentIndexChanged.connect(self._save_state)
         mouth_label = QLabel("Mouth detail")
         mouth_label.setObjectName("fieldLabel")
@@ -1105,7 +1113,7 @@ class MainWindow(QMainWindow):
         if path:
             folder = Path(path)
             self._add_targets(sorted(p for p in folder.rglob('*')
-                if p.suffix.lower() in core.IMAGE_EXTS | video.VIDEO_EXTENSIONS))
+                if p.suffix.lower() in core.IMAGE_EXTS | MOTION_EXTENSIONS))
             self.output_edit.setText(str(core.suggested_output_dir(folder)))
             self._remember_folder("target_dir", folder)
 
@@ -1119,7 +1127,7 @@ class MainWindow(QMainWindow):
                 resolved = str(path.resolve())
             except OSError:
                 continue
-            if path.is_file() and path.suffix.lower() in core.IMAGE_EXTS | video.VIDEO_EXTENSIONS and resolved not in existing:
+            if path.is_file() and path.suffix.lower() in core.IMAGE_EXTS | MOTION_EXTENSIONS and resolved not in existing:
                 path = path.resolve()
                 self.targets.append(path)
                 item = QListWidgetItem(path.name)
@@ -1128,7 +1136,7 @@ class MainWindow(QMainWindow):
                 self.target_list.addItem(item)
                 existing.add(resolved)
                 added += 1
-                if self._is_video(path):
+                if self._is_motion(path):
                     videos.append(path)
         if added and self.target_list.currentRow() < 0:
             self.target_list.setCurrentRow(0)
@@ -1141,14 +1149,14 @@ class MainWindow(QMainWindow):
         self._start_duration_scan()
 
     @staticmethod
-    def _is_video(path):
-        return path is not None and Path(path).suffix.lower() in video.VIDEO_EXTENSIONS
+    def _is_motion(path):
+        return path is not None and Path(path).suffix.lower() in MOTION_EXTENSIONS
 
     def _active_targets(self):
-        return [p for p in self.targets if not self._is_video(p) or self.include_videos.isChecked()]
+        return [p for p in self.targets if not self._is_motion(p) or self.include_videos.isChecked()]
 
     def _sync_video_quality(self):
-        locked = self.include_videos.isChecked() and any(self._is_video(p) for p in self.targets)
+        locked = self.include_videos.isChecked() and any(self._is_motion(p) for p in self.targets)
         if locked and not self._video_quality_locked:
             self._photo_quality = self.quality_mode.currentData()
             self.quality_mode.blockSignals(True)
@@ -1159,8 +1167,8 @@ class MainWindow(QMainWindow):
             self.quality_mode.setCurrentIndex(max(0,self.quality_mode.findData(self._photo_quality)))
             self.quality_mode.blockSignals(False)
         self._video_quality_locked = locked
-        self.quality_mode.setToolTip('Included videos require Careful for the whole queue. Untick Include videos to choose another mode.'
-            if locked else 'Choose photo rendering quality. Video queues use Careful.')
+        self.quality_mode.setToolTip('Included videos and GIFs require Careful for the whole queue. Untick Include videos / GIFs to choose another mode.'
+            if locked else 'Choose photo rendering quality. Video and GIF queues use Careful.')
 
     def _include_videos_changed(self, _checked):
         if not hasattr(self,'quality_mode'):
@@ -1208,12 +1216,12 @@ class MainWindow(QMainWindow):
                 warnings.append(f'{Path(path).name}: {info.duration/60:.1f} minutes (over 3 minutes).')
             elif info.duration > 60:
                 warnings.append(f'{Path(path).name}: {info.duration/60:.1f} minutes (over 1 minute).')
-        if self._is_video(self._selected_target()) and str(self._selected_target()) in results:
+        if self._is_motion(self._selected_target()) and str(self._selected_target()) in results:
             self._show_selected_target(self.target_list.currentRow())
         if warnings:
-            QMessageBox.warning(self,'Video duration', '\n'.join(warnings[:12])
+            QMessageBox.warning(self,'Clip duration', '\n'.join(warnings[:12])
                 + ('\nMore long clips are in the queue.' if len(warnings)>12 else '')
-                + '\n\nCareful video rendering can take a long time. Select a clip and adjust Video from / to for a shorter range. Originals stay untouched.')
+                + '\n\nCareful animation rendering can take a long time. Select a clip and adjust Clip from / to for a shorter range. Originals stay untouched.')
         self._refresh_controls()
 
     def _play_video_preview(self):
@@ -1253,18 +1261,20 @@ class MainWindow(QMainWindow):
         self._refresh_controls()
 
     def _refresh_target_count(self):
-        movies = sum(self._is_video(p) for p in self.targets)
-        photos = len(self.targets)-movies
+        gifs = sum(p.suffix.lower() in gif.GIF_EXTENSIONS for p in self.targets)
+        movies = sum(self._is_motion(p) for p in self.targets)-gifs
+        photos = len(self.targets)-movies-gifs
         parts = []
         if photos: parts.append(f'{photos} photo'+('s' if photos!=1 else ''))
-        if movies: parts.append(f'{movies} video'+('s' if movies!=1 else '')+(' (excluded)' if not self.include_videos.isChecked() else ''))
+        for count,kind in ((movies,'video'),(gifs,'GIF')):
+            if count: parts.append(f'{count} {kind}'+('s' if count!=1 else '')+(' (excluded)' if not self.include_videos.isChecked() else ''))
         text = ' · '.join(parts) or 'No destination media'
         self.target_count.setText(text)
         self.target_count.setToolTip(text)
         for index,path in enumerate(self.targets):
             item = self.target_list.item(index)
-            excluded = self._is_video(path) and not self.include_videos.isChecked()
-            item.setText(('Video · ' if self._is_video(path) else '')+path.name)
+            excluded = self._is_motion(path) and not self.include_videos.isChecked()
+            item.setText(('GIF · ' if path.suffix.lower() in gif.GIF_EXTENSIONS else 'Video · ' if self._is_motion(path) else '')+path.name)
             item.setForeground(QColor(MUTED if excluded else TEXT))
 
     def _show_selected_target(self, row: int):
@@ -1274,7 +1284,7 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             return
         self._trim_loading = True
-        self._trim_path = target if self._is_video(target) else None
+        self._trim_path = target if self._is_motion(target) else None
         start,end = self.video_ranges.get(str(target),(0.,0.))
         info = self.video_info.get(str(target))
         maximum = info.duration if isinstance(info,video.VideoInfo) else 864000
@@ -1291,10 +1301,12 @@ class MainWindow(QMainWindow):
             self._refresh_controls()
             return
         self.preview_view.clear_image("Click Preview to generate this result")
-        if self._is_video(target):
+        if self._is_motion(target):
+            kind = 'GIF' if target.suffix.lower() in gif.GIF_EXTENSIONS else 'video'
+            self.play_preview_button.setText(f'Play {kind} preview')
             duration = f'{info.duration:.1f} s · ' if isinstance(info,video.VideoInfo) else ''
-            self.preview_caption.setText(duration+('2-second video preview · select the person when prompted'
-                if self.include_videos.isChecked() else 'Tick Include videos to preview or render this clip.'))
+            self.preview_caption.setText(duration+(f'2-second {kind} preview · select the person when prompted'
+                if self.include_videos.isChecked() else 'Tick Include videos / GIFs to preview or render this clip.'))
         else:
             self.preview_caption.setText(target.name)
         self._refresh_controls()
@@ -1376,7 +1388,7 @@ class MainWindow(QMainWindow):
         target = self._selected_target()
         if not self.source_path or not target:
             return
-        if self._is_video(target):
+        if self._is_motion(target):
             self._preview_video(target)
             return
         self.log.clear()
@@ -1422,8 +1434,9 @@ class MainWindow(QMainWindow):
     def _preview_video(self, target):
         if not self.include_videos.isChecked():
             return
-        answer = QMessageBox.information(self,'2-second video preview',
-            'Swapio will render a 2-second preview using Careful. This can take a few minutes depending on the face and your device.\n\nUse Play video preview when it finishes to review motion and audio.',
+        kind = 'GIF' if target.suffix.lower() in gif.GIF_EXTENSIONS else 'video'
+        answer = QMessageBox.information(self,f'2-second {kind} preview',
+            f'Swapio will render a 2-second {kind} preview using Careful. This can take a few minutes depending on the face and your device.\n\nUse Play {kind} preview when it finishes to review the animation.',
             QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Ok)
         if answer != QMessageBox.Ok:
             return
@@ -1442,7 +1455,7 @@ class MainWindow(QMainWindow):
         self.worker.face_choice_requested.connect(self._face_choice_requested)
         self.worker.finished.connect(self._refresh_controls)
         self._set_running(True)
-        self.status_label.setText('Preparing video preview…')
+        self.status_label.setText(f'Preparing {kind} preview…')
         self.worker.start()
 
     def _video_person_selected(self, path, selection):
@@ -1458,7 +1471,8 @@ class MainWindow(QMainWindow):
         self._refresh_model_status()
         self.progress.setRange(0,max(total,done))
         self.progress.setValue(done)
-        self.progress.setFormat(f"Media {counts['media_index']}/{counts['media_total']} · frame {done}/{total} · {counts['unchanged']} unchanged")
+        position = f"{done/1000:.2f}/{total/1000:.2f} s" if counts.get("unit") == "time" else f"frame {done}/{total}"
+        self.progress.setFormat(f"Media {counts['media_index']}/{counts['media_total']} · {position} · {counts['unchanged']} unchanged")
         self.status_label.setText(f"{counts['provider']} · ~{counts['eta']:.0f}s left")
 
     def _video_preview_ready(self, result):
@@ -1472,13 +1486,15 @@ class MainWindow(QMainWindow):
         self._set_running(False)
         self.video_preview_path = Path(item['output'])
         self.preview_view.set_image(item['image'])
-        self.preview_caption.setText(f"Video preview · {item['duration']:.2f} s · {item['unchanged']} unchanged frame(s)")
+        kind = "GIF" if self.video_preview_path.suffix.lower() in gif.GIF_EXTENSIONS else "Video"
+        self.play_preview_button.setText(f"Play {kind.lower() if kind == 'Video' else kind} preview")
+        self.preview_caption.setText(f"{kind} preview · {item['duration']:.2f} s · {item['unchanged']} unchanged frame(s)")
         self.preview_caption.setToolTip(item['output'])
         self.play_preview_button.setEnabled(True)
         notify_output_folder(self.video_preview_path.parent)
         self.progress.setRange(0,1)
         self.progress.setValue(1)
-        self.progress.setFormat('2-second preview ready · Play video preview')
+        self.progress.setFormat(f'2-second preview ready · {self.play_preview_button.text()}')
         self.status_label.setText('Preview ready')
         self._refresh_model_status()
 
@@ -1524,7 +1540,7 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, len(targets))
         self.progress.setValue(0)
         self.progress.setFormat(f"0/{len(targets)}")
-        if any(self._is_video(p) for p in targets):
+        if any(self._is_motion(p) for p in targets):
             self.worker = self._media_worker('batch',targets,output)
         else:
             self.worker = TaskWorker(
@@ -1657,18 +1673,21 @@ class MainWindow(QMainWindow):
         self.face_mode.setEnabled(not running and not self.ask_face.isChecked())
         self.reset_faces_button.setEnabled(not running and bool(self.face_choices or self.video_selections))
         active = self._active_targets()
-        video_only = bool(active) and all(self._is_video(p) for p in active)
-        if video_only and not self._video_format_locked:
-            self._photo_format = self.output_format.currentData()
+        video_only = bool(active) and all(self._is_motion(p) for p in active)
+        if video_only:
+            if not self._video_format_locked:
+                self._photo_format = self.output_format.currentData()
+            kinds = {'gif' if p.suffix.lower() in gif.GIF_EXTENSIONS else 'mp4' for p in active}
+            format_kind = next(iter(kinds)) if len(kinds) == 1 else 'motion'
             self.output_format.blockSignals(True)
-            self.output_format.setCurrentIndex(self.output_format.findData('mp4'))
+            self.output_format.setCurrentIndex(self.output_format.findData(format_kind))
             self.output_format.blockSignals(False)
         elif not video_only and self._video_format_locked:
             self.output_format.blockSignals(True)
             self.output_format.setCurrentIndex(max(0,self.output_format.findData(self._photo_format)))
             self.output_format.blockSignals(False)
         self._video_format_locked = video_only
-        inspecting = any(self._is_video(p) and str(p) not in self.video_info for p in active)
+        inspecting = any(self._is_motion(p) and str(p) not in self.video_info for p in active)
         ready = (not running and self.source_path is not None and bool(active)
                  and not inspecting and self.permission.isChecked() and not core.missing_models())
         target = self._selected_target()
@@ -1680,7 +1699,7 @@ class MainWindow(QMainWindow):
         self.source_button.setEnabled(not running)
         for button in self.target_buttons:
             button.setEnabled(not running)
-        self.trim_row.setEnabled(not running and self._is_video(target) and self.include_videos.isChecked())
+        self.trim_row.setEnabled(not running and self._is_motion(target) and self.include_videos.isChecked())
         self.play_preview_button.setEnabled(not running and self.video_preview_path is not None)
         for widget in (self.output_edit,self.output_browse,self.output_format,self.preserve_mouth,
                        self.destination_eyes,self.restoration_strength,self.skip_completed,self.permission,self.character_name):

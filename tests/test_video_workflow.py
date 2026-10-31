@@ -76,9 +76,24 @@ class UnifiedMediaTests(unittest.TestCase):
 
     def test_folder_import_finds_both_media_types(self):
         photo=self.root/'photo.jpg';photo.touch();nested=self.root/'nested';nested.mkdir();clip=nested/'clip.mp4';clip.touch()
+        animation=nested/'animation.GIF';animation.touch()
         with patch('app.native_directory',return_value=str(self.root)):
             self.window._add_folder()
-        self.assertEqual(set(self.window.targets),{photo,clip})
+        self.assertEqual(set(self.window.targets),{photo,clip,animation})
+
+    def test_gifs_use_include_toggle_careful_ranges_and_matching_output_format(self):
+        w=self.window;w.quality_mode.setCurrentIndex(w.quality_mode.findData('best'))
+        (animation,)=self.add('animation.gif')
+        self.assertEqual(w._active_targets(),[])
+        self.assertIn('GIF',w.target_count.text())
+        w.include_videos.setChecked(True)
+        self.assertEqual(w._active_targets(),[animation]);self.assertEqual(w._quality(),'careful')
+        self.assertFalse(w.quality_mode.isEnabled());self.assertTrue(w.trim_row.isEnabled())
+        self.assertEqual(w.output_format.currentData(),'gif');self.assertFalse(w.output_format.isEnabled())
+        self.add('movie.mp4')
+        self.assertEqual(w.output_format.currentData(),'motion')
+        w.include_videos.setChecked(False)
+        self.assertEqual(w._quality(),'best');self.assertEqual(w.output_format.currentData(),'jpg')
 
     def test_duration_warning_distinguishes_one_and_three_minutes(self):
         a,b,c=self.add('short.mp4','long.mp4','very-long.mp4')
@@ -112,6 +127,7 @@ class UnifiedMediaTests(unittest.TestCase):
         self.assertEqual(app.native_media_files(None,'Media','/tmp'),['/a.jpg','/b.mp4'])
         args=run.call_args.args[0]
         self.assertIn('*.mp4',args[-1]);self.assertIn('*.jpg',args[-1]);self.assertIn('--multiple',args)
+        self.assertIn('*.gif',args[-1])
 
 class MediaWorkerTests(unittest.TestCase):
     def options(self):
@@ -159,5 +175,18 @@ class MediaWorkerTests(unittest.TestCase):
             self.run_worker(worker)
         self.assertEqual(order,['photo','video','photo']);self.assertEqual(results[0]['completed'],3)
         self.assertFalse(state['photo']);self.assertFalse(state['video'])
+
+    def test_gif_uses_animated_renderer_and_shared_engine_in_mixed_queue(self):
+        options=self.options();options['targets']=[Path('/clip.gif'),Path('/clip.mp4')]
+        options['video_selections']['/clip.gif']=SimpleNamespace(valid=lambda *_:True)
+        photo=SimpleNamespace(models=Path('/models'),use_gpu=True,det_size=640,provider='Not loaded',release_models=lambda:None)
+        movie=SimpleNamespace(provider='CUDA',release_models=lambda:None)
+        worker=app.MediaWorker(photo,'batch',**options);results=[];worker.batch_ready.connect(results.append)
+        with patch('app.video.VideoSwapEngine',return_value=movie) as engine, \
+             patch('app.gif.render_gif',return_value={'output':'/out/clip.gif','provider':'CUDA'}) as gif, \
+             patch('app.video.render_video',return_value={'output':'/out/clip.mp4','provider':'CUDA'}) as video:
+            self.run_worker(worker)
+        self.assertEqual(engine.call_count,1);self.assertEqual(gif.call_count,1);self.assertEqual(video.call_count,1)
+        self.assertEqual(results[0]['completed'],2);self.assertEqual(results[0]['failed'],0)
 
 if __name__=='__main__':unittest.main()

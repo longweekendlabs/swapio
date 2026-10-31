@@ -1,12 +1,12 @@
 # Swapio
 
-**Offline face swapping for photos and short videos.**
+**Offline face swapping for photos, videos and GIFs.**
 
 [![Latest release](https://img.shields.io/github/v/release/longweekendlabs/swapio?label=download)](https://github.com/longweekendlabs/swapio/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20arm64-informational)](https://github.com/longweekendlabs/swapio/releases/latest)
 
-Pick one source portrait, add destination photos and short videos, and swap that face through the queue. Nothing is uploaded and nothing is sent to a cloud service: after the one-time model download, the app does not use the network at all.
+Pick one source portrait, add destination photos, short videos and GIFs, and swap that face through the queue. Nothing is uploaded and nothing is sent to a cloud service: after the one-time model download, the app does not use the network at all.
 
 Swapio is free.
 
@@ -16,7 +16,7 @@ Swapio is free.
 
 ## One face in, a whole folder out
 
-One source portrait per run. Use Add media for individual files or add a whole folder tree, then preview before rendering. Photos and videos share one three-step workflow: source, destination media, output and quality. Swap the largest face, every detected face, or enable "Ask which face to swap when several are detected" to choose a person from numbered thumbnails. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
+One source portrait per run. Use Add media for individual files or add a whole folder tree, then preview before rendering. Photos, videos and GIFs share one three-step workflow: source, destination media, output and quality. Swap the largest face, every detected face, or enable "Ask which face to swap when several are detected" to choose a person from numbered thumbnails. Single-face photos continue automatically; you can skip a photo or stop the batch while choosing.
 
 Repeat a batch and it processes only new or changed photos by default. A failed photo does not stop the rest of the run. The final warning separates saved, skipped and failed photos and includes the actual errors; failed photos have no new output. Successful saves show their full paths in the log.
 
@@ -44,15 +44,17 @@ Mouth protection keeps the target's open or obstructed expression together, incl
 
 Target-eye preservation is off by default. Enabling it keeps the target's eye interiors, eyelids, lashes and eye colour in the swapped face. Leaving it off uses generated eyes, whose colour is not guaranteed to match the source exactly. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
 
-## Preview a short video before rendering it
+## Preview an animation before rendering it
 
-Tick Include videos to process clips in the same queue as photos. When included clips are present, quality switches to Careful and stays locked; unticking restores your photo quality choice. The same source portrait, eye, mouth and restoration controls apply.
+Tick Include videos / GIFs to process clips and GIF animations in the same queue as photos. When included clips are present, quality switches to Careful and stays locked; unticking restores your photo quality choice. The same source portrait, eye, mouth and restoration controls apply.
 
-Select a clip to adjust its start and end directly below the queue. Import warns about clips over one minute, with a stronger warning above three minutes. Preview selected media confirms that video processing takes time, then generates up to two seconds for playback in your usual video player. Choose the person to follow when prompted; multiple-person clips always require an explicit choice.
+Select a video or GIF to adjust its start and end directly below the queue. Import warns about clips over one minute, with a stronger warning above three minutes. Preview selected media confirms that animation processing takes time, then generates up to two seconds for playback in your usual video player. Choose the person to follow when prompted; multiple-person clips always require an explicit choice.
 
 Tracking checks the selected person's original face identity on every frame. Uncertain matches stay unchanged and are counted in the result. The face model and sampling choice stay fixed within each continuous scene to reduce flicker; blinking, speech, occlusion and cuts still need visual review.
 
-Exports MP4 with the original audio content and displayed orientation. Variable-frame-rate inputs are converted to their average frame rate. Media runs sequentially, photo and video model sets unload before switching between them and after the job, and cancelled or failed renders remove temporary movies. Only verified outputs count as saved.
+Videos export MP4 with the original audio content and displayed orientation. Variable-frame-rate inputs are converted to their average frame rate. Media runs sequentially, photo and animation model sets unload before switching between them and after the job, and cancelled or failed renders remove temporary movies. Only verified outputs count as saved.
+
+GIF input stays GIF output, keeping the frame delays, loop count, dimensions and transparency. Zero or missing frame delays use 100 milliseconds. Each frame uses GIF's limited colour palette; colours may change during export. Frames are processed one at a time, without keeping the whole animation in memory. GIF processing uses the existing image libraries and needs no FFmpeg.
 
 Video requires the computer's FFmpeg and ffprobe, with H.264 encoding available. Swapio reports missing tools and does not download another media runtime. HDR inputs need an SDR copy for this first video version. This feature is available for local testing and has not been released in the downloadable packages yet.
 
@@ -66,7 +68,7 @@ Installed models live in your user data folder. The installed app runs independe
 
 ## Formats and naming
 
-Reads photos in `jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`, and `tiff`, and videos in `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`. Photo output defaults to JPEG at quality 98, with lossless PNG available; video output is MP4.
+Reads photos in `jpg`, `jpeg`, `png`, `webp`, `bmp`, `tif`, and `tiff`, and videos in `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`, plus `gif` animations. Photo output defaults to JPEG at quality 98, with lossless PNG available; video output is MP4 and GIF output is GIF.
 
 Give a run a character name and outputs are named `CharacterName_swapped_DDMMYYYY-HHMMSS.ext`, so a batch stays recognizable months later. Without one, Swapio uses the destination filename.
 
@@ -78,7 +80,7 @@ The application code and the pretrained models carry different licences. Insight
 
 ## Scope
 
-Photo swapping and experimental short-video swapping. Body reshaping and character libraries remain outside the app. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
+Photo swapping and experimental short-video/GIF swapping. Body reshaping and character libraries remain outside the app. Appearance recolouring was removed after the models evaluated for it failed the quality bar.
 
 ## Feedback
 

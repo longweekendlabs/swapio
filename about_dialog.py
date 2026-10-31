@@ -48,7 +48,7 @@ class AboutDialog(QDialog):
         layout.addWidget(version)
 
         description = QLabel(
-            "Replace one face across photos or short videos while keeping the work "
+            "Replace one face across photos, short videos or GIFs while keeping the work "
             "private on your own computer. Originals are never modified."
         )
         description.setObjectName("aboutDescription")

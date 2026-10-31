@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-31
+
+### Added
+
+- GIF import through Add media and recursive folder import. Include videos / GIFs enables animations, locks Careful quality and supports per-GIF ranges and a two-second preview.
+- GIF output preserves animation frame delays, loop count, dimensions and transparency, including composited input disposal and frame offsets. Zero or missing delays use 100 ms. Frames are processed and written incrementally; no extra runtime or download is needed.
+- GIF-only queues show GIF output, while mixed video/GIF queues show that the output follows each input format. Verify the encoded frame count, timing and loop settings before reporting a save; clean partial GIFs after cancellation or failure.
+
 ## [0.6.1] - 2026-10-31
 
 ### Changed
