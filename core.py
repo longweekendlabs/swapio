@@ -40,6 +40,13 @@ HYPERSWAP_CUDA_OPTIONS = {
     "arena_extend_strategy": "kSameAsRequested",
     "gpu_mem_limit": 2 * 1024**3,
 }
+# Analysis, identity and restoration otherwise use exhaustive cuDNN searches
+# and power-of-two arenas independently, crowding the 6 GB card after warm-up.
+CUDA_OPTIONS = {
+    "cudnn_conv_algo_search": "DEFAULT",
+    "arena_extend_strategy": "kSameAsRequested",
+    "cudnn_conv_use_max_workspace": "0",
+}
 INNER_MOUTH_106_INDICES = np.array([65, 66, 62, 70, 69, 57, 60, 54])
 # The 106-point model puts each eyelid contour in its own run; 43-51 and 97-105
 # next to them are the eyebrows and must stay out of it.
@@ -386,7 +393,7 @@ class SwapEngine:
         available = ort.get_available_providers()
         want_cuda = self.use_gpu and "CUDAExecutionProvider" in available
         providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            [("CUDAExecutionProvider", CUDA_OPTIONS), "CPUExecutionProvider"]
             if want_cuda
             else ["CPUExecutionProvider"]
         )
@@ -440,15 +447,22 @@ class SwapEngine:
     def _refresh_provider(self):
         models = (getattr(self.analyser, "models", None) or {}).values()
         sessions = [getattr(model, "session", None) for model in models]
-        sessions.append(getattr(self.swapper, "session", None))
+        identity_session = getattr(self.swapper, "session", None)
+        sessions.append(identity_session)
         accelerated = any(session is not None and "CUDAExecutionProvider" in session.get_providers()
                           for session in sessions)
         quality_cuda = (self.hyperswap is not None
                         and self.hyperswap.get_providers()[0] == "CUDAExecutionProvider")
         if quality_cuda:
             self.provider = "CUDA" if accelerated else "CUDA detail · CPU detection/identity"
+            if (identity_session is not None
+                    and identity_session.get_providers()[0] == "CPUExecutionProvider"):
+                self.provider = "CUDA detection/detail · CPU identity"
         else:
             self.provider = "CUDA detection/identity · CPU detail" if accelerated else "CPU"
+            if (accelerated and identity_session is not None
+                    and identity_session.get_providers()[0] == "CPUExecutionProvider"):
+                self.provider = "CUDA detection · CPU identity/detail"
 
     def _ensure_enhancer(self, on_log: LogFn = _noop):
         """Load the face restoration model the first time Best quality runs."""
@@ -893,6 +907,24 @@ class SwapEngine:
         self._refresh_provider()
         return infer(self.hyperswap)
 
+    def _identity_cpu_retry(self, operation, on_log):
+        """Keep the selected face and model when a CUDA identity inference fails."""
+        try:
+            return operation()
+        except Exception as exc:
+            session = self.swapper.session
+            if session.get_providers()[0] != "CUDAExecutionProvider":
+                raise
+            on_log(
+                f"Identity swap failed on CUDA ({type(exc).__name__}); "
+                "retrying the same face on CPU. Identity swaps use CPU for this session."
+            )
+        # Reconfigure in place: release this model's GPU arena, retain its
+        # embedding map and wrapper, and do not recreate it for every tile/photo.
+        self.swapper.session.set_providers(["CPUExecutionProvider"])
+        self._refresh_provider()
+        return operation()
+
     def _hyperswap_face(self, target: np.ndarray, target_face, source_face, boost_size: int,
                        on_log: LogFn = _noop):
         from insightface.utils import face_align
@@ -925,7 +957,7 @@ class SwapEngine:
         crop = self._fuse_predictions(swapped_tiles, model_size, boost_size)
         return self._paste_crop(target, crop, matrix)
 
-    def _inswapper_face(self, target, target_face, source_face, boost_size):
+    def _inswapper_face(self, target, target_face, source_face, boost_size, on_log=_noop):
         """Sample the identity model on one grid, using our shared face composite."""
         from insightface.utils import face_align
 
@@ -940,12 +972,16 @@ class SwapEngine:
         frames = []
         for tile in self._implode_pixels(crop, model_size):
             blob = cv2.dnn.blobFromImage(tile, 1.0 / 255.0, (model_size, model_size), swapRB=True)
-            prediction = self.swapper.session.run(
-                self.swapper.output_names,
-                {self.swapper.input_names[0]: blob, self.swapper.input_names[1]: latent},
-            )[0][0]
-            if not np.isfinite(prediction).all() or np.max(np.abs(prediction)) > 100:
-                raise RuntimeError("The identity model returned invalid pixels; result was not saved.")
+            def infer():
+                prediction = self.swapper.session.run(
+                    self.swapper.output_names,
+                    {self.swapper.input_names[0]: blob, self.swapper.input_names[1]: latent},
+                )[0][0]
+                if (prediction.shape != (3, model_size, model_size)
+                        or not np.isfinite(prediction).all() or np.max(np.abs(prediction)) > 100):
+                    raise RuntimeError("The identity model returned invalid pixels; result was not saved.")
+                return prediction
+            prediction = self._identity_cpu_retry(infer, on_log)
             frames.append(np.clip(prediction.transpose(1, 2, 0)[:, :, ::-1] * 255, 0, 255))
         crop = self._fuse_predictions(frames, model_size, boost_size)
         return self._paste_crop(target, crop, matrix)
@@ -990,7 +1026,7 @@ class SwapEngine:
         # More sampling phases cannot repair weak identity conditioning. Compare
         # the independent identity model instead; both use the same target pose.
         alternate_size = 256 if boost_size <= 512 else 512
-        alternate = self._inswapper_face(target, target_face, source_face, alternate_size)
+        alternate = self._inswapper_face(target, target_face, source_face, alternate_size, on_log)
         alternate_score = self._source_similarity(alternate, target_face, source_face)
         if alternate_score is None or alternate_score < primary_score + MIN_IDENTITY_GAIN:
             on_log("Compared source likeness; kept the detail model result.")
@@ -1332,7 +1368,9 @@ class SwapEngine:
                 return self._apply_visibility(rendered, previous, visibility)
 
             if quality == "fast":
-                result = finish(self.swapper.get(result, face, source_face, paste_back=True), False)
+                result = finish(self._identity_cpu_retry(
+                    lambda: self.swapper.get(result, face, source_face, paste_back=True), on_log
+                ), False)
             else:
                 boost_size = self._boost_size_for_face(target, face, quality)
                 if boost_size > 512:

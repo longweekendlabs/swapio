@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Recover identity-model CUDA failures by retrying the same selected face on CPU and retaining that recovery for the session, instead of failing subsequent photos too.
+- Reduce CUDA workspace reservations for face analysis, identity swapping and restoration so warmed-up models leave more GPU memory available.
+- Show failed batches as warnings with the first error and expandable failure details. Failed photos are explicitly reported as having no new output.
 - Notify KDE file-manager views after saved photos and again at batch completion, so missed filesystem updates do not leave Dolphin showing an empty output folder.
 - Log full output paths and reject missing or empty output files before reporting them saved.
 - Revert the rejected source-appearance renderer and restore the previous face-swap pipeline, restoration slider, and mouth handling. Existing CUDA fixes remain. Previous experimental outputs are eligible for reprocessing.

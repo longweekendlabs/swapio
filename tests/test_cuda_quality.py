@@ -22,6 +22,43 @@ class Session:
 
 
 class CudaQualityTests(unittest.TestCase):
+    def test_identity_cuda_allocation_failure_retries_same_face_and_reuses_cpu(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        engine = core.SwapEngine()
+        session = Mock()
+        session.get_providers.return_value = ["CUDAExecutionProvider"]
+        session.set_providers.side_effect = lambda providers: setattr(
+            session.get_providers, "return_value", providers)
+        engine.swapper = SimpleNamespace(session=session)
+        target, selected_face, source = object(), object(), object()
+        calls = []
+        def operation():
+            calls.append((target, selected_face, source))
+            if session.get_providers()[0] == "CUDAExecutionProvider":
+                raise RuntimeError("Conv_612 Failed to allocate memory for requested buffer of size 270607872")
+            return "swapped"
+        logs = []
+        for _ in range(2):
+            self.assertEqual(engine._identity_cpu_retry(operation, logs.append), "swapped")
+        self.assertEqual(calls, [(target, selected_face, source)] * 3)
+        session.set_providers.assert_called_once_with(["CPUExecutionProvider"])
+        self.assertEqual(len(logs), 1)
+        self.assertIn("CPU", logs[0])
+
+    def test_identity_cpu_failure_propagates_without_retries(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        engine = core.SwapEngine()
+        session = Mock()
+        session.get_providers.return_value = ["CPUExecutionProvider"]
+        engine.swapper = SimpleNamespace(session=session)
+        operation = Mock(side_effect=RuntimeError("CPU inference failed"))
+        with self.assertRaisesRegex(RuntimeError, "CPU inference failed"):
+            engine._identity_cpu_retry(operation, lambda _: None)
+        session.set_providers.assert_not_called()
+        operation.assert_called_once()
+
     def test_valid_cuda_output_does_not_reload_or_use_cpu(self):
         engine = core.SwapEngine()
         pixels = np.zeros((3, 256, 256), np.float32)

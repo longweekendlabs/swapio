@@ -18,6 +18,33 @@ QT_APP = QApplication.instance() or QApplication([])
 
 
 class AppWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        state_writer = patch("app.write_state")
+        state_writer.start()
+        self.addCleanup(state_writer.stop)
+
+    @patch("app.QMessageBox.exec", return_value=app.QMessageBox.Ok)
+    @patch("app.QMessageBox.information")
+    @patch("app.core.missing_models", return_value=[])
+    @patch("app.read_state", return_value={})
+    def test_failed_batch_shows_warning_and_actual_errors(self, _read, _missing, info, execute):
+        window = app.MainWindow()
+        window.last_output = Path("/tmp/swapio-test")
+        boxes = []
+        execute.side_effect = lambda: boxes.extend(
+            widget for widget in QT_APP.topLevelWidgets() if isinstance(widget, app.QMessageBox)
+        )
+        window._batch_ready({"completed": 0, "skipped": 1, "failed": 2,
+                             "outputs": [], "stopped": False,
+                             "errors": [{"path": "/inputs/selected-face.png", "error": "inference failed"}]})
+        self.assertEqual(len(boxes), 1)
+        self.assertEqual(boxes[0].icon(), app.QMessageBox.Warning)
+        self.assertIn("Failed 2", boxes[0].text())
+        self.assertIn("selected-face.png", boxes[0].informativeText())
+        self.assertIn("inference failed", boxes[0].detailedText())
+        info.assert_not_called()
+        window.close()
+
     @patch("app.QMessageBox.information")
     @patch("app.notify_output_folder", return_value=True)
     @patch("app.core.missing_models", return_value=[])

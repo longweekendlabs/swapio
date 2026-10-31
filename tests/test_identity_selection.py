@@ -133,7 +133,8 @@ class IdentitySelectionTests(unittest.TestCase):
                                      (1, 3, 128, 128)).copy()
         run = Mock(return_value=[prediction])
         engine.swapper = SimpleNamespace(
-            emap=np.eye(2, dtype=np.float32), session=SimpleNamespace(run=run),
+            emap=np.eye(2, dtype=np.float32), session=SimpleNamespace(
+                run=run, get_providers=lambda: ["CPUExecutionProvider"]),
             input_names=["target", "source"], output_names=["output"],
         )
         result = engine._inswapper_face(np.zeros((128, 128, 3), np.uint8), face, source, 256)

@@ -1174,6 +1174,26 @@ class MainWindow(QMainWindow):
         )
         self._refresh_model_status()
         if not result["stopped"]:
+            if result["failed"]:
+                message = QMessageBox(self)
+                message.setIcon(QMessageBox.Warning)
+                message.setWindowTitle("Batch finished with errors")
+                message.setText(
+                    f"Saved {result['completed']} swapped photo(s).\n"
+                    f"Skipped {result['skipped']} photo(s).\n"
+                    f"Failed {result['failed']}. Failed photos have no new output."
+                )
+                errors = result.get("errors", [])
+                first = errors[0] if errors else None
+                message.setInformativeText(
+                    (f"First failure: {Path(first['path']).name}\n{first['error']}\n\n" if first else "")
+                    + f"Output: {self.last_output}"
+                )
+                message.setDetailedText("\n\n".join(
+                    f"{error['path']}\n{error['error']}" for error in errors
+                ))
+                message.exec()
+                return
             QMessageBox.information(
                 self,
                 "Batch complete",
