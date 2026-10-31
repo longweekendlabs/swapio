@@ -27,7 +27,7 @@ ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 OCCLUDER_MODEL = "xseg_1.onnx"
 FACE_PARSER_MODEL = "bisenet_resnet_18.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 22
+PROCESSING_REVISION = 23
 # Require a clear gain before trading the detail model for the identity model.
 # Close scores keep the existing rendering rather than oscillating between models.
 MIN_IDENTITY_GAIN = 0.035
@@ -518,6 +518,55 @@ class SwapEngine:
     def _apply_visibility(swapped, original, visibility):
         alpha = np.clip(visibility, 0, 1)[:, :, None]
         return np.rint(alpha * swapped + (1 - alpha) * original).clip(0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _hairline_protection(original_labels, generated_labels, matrix, shape):
+        # The target's hair must survive, and newly generated hair on bare skin
+        # must reveal that original skin too. Eyebrows are separate parser classes.
+        hair = (np.isin(original_labels, (17, 18))
+                | np.isin(generated_labels, (17, 18))).astype(np.uint8)
+        if not np.any(hair):
+            return None
+        # Include the model's antialiased wisps; feather outside the protected
+        # area rather than leaving half of an invented hairline underneath it.
+        hard = cv2.dilate(hair, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+        distance = cv2.distanceTransform(1 - hard, cv2.DIST_L2, 5)
+        protection = 1 - np.clip(distance / 5, 0, 1)
+        protection = protection * protection * (3 - 2 * protection)
+        # Fine hair/lash boundaries can be ambiguous. Never use this guard to
+        # replace generated eyebrows, eyes, glasses, nose or mouth with the target.
+        features = (np.isin(original_labels, (2, 3, 4, 5, 6, 10, 11, 12, 13))
+                    | np.isin(generated_labels, (2, 3, 4, 5, 6, 10, 11, 12, 13)))
+        away = cv2.distanceTransform(1 - features.astype(np.uint8), cv2.DIST_L2, 5)
+        protection *= np.clip(away / 5, 0, 1)
+        return cv2.warpAffine(protection, cv2.invertAffineTransform(matrix), shape[1::-1])
+
+    def _protect_hairline(self, rendered, original, face, on_log=_noop):
+        kps = np.asarray(getattr(face, "kps", None), np.float32)
+        if kps.shape != (5, 2) or not np.isfinite(kps).all():
+            return rendered
+        before = self._parse_face(original, face)
+        if before is None:
+            return rendered
+        after = self._parse_face(rendered, face, matrix=before[2])
+        if after is None:
+            return rendered
+        protection = self._hairline_protection(before[1], after[1], before[2], original.shape)
+        points = np.asarray(getattr(face, "landmark_2d_106", None), np.float32)
+        if protection is not None and points.shape == (106, 2) and np.isfinite(points).all():
+            # Also protect the measured central features when the parser misses
+            # a few lash pixels next to temple hair. The forehead stays outside.
+            hull = cv2.convexHull(np.rint(points[33:106]).astype(np.int32))
+            if cv2.contourArea(hull) >= 4:
+                features = np.zeros(original.shape[:2], np.uint8)
+                cv2.fillConvexPoly(features, hull, 1)
+                margin = max(round(float(np.max(np.ptp(points[33:106], axis=0))) * 0.02), 1)
+                away = cv2.distanceTransform(1 - features, cv2.DIST_L2, 5)
+                protection *= np.clip((away - margin) / max(margin, 1), 0, 1)
+        if protection is None or not np.any((protection > 0) & np.any(rendered != original, axis=2)):
+            return rendered
+        on_log("Protected the original hairline and forehead from generated hair.")
+        return self._apply_visibility(rendered, original, 1 - protection)
 
     def _mouth_expression_mask(self, original, face, visibility):
         """Protect an open/obstructed expression in original target coordinates."""
@@ -1382,6 +1431,10 @@ class SwapEngine:
                     result, face, source_face, boost_size, quality,
                     restoration_strength, on_log, finish=finish,
                 )
+            # Keep the accepted model/identity comparison unchanged. Hair is a
+            # final composite constraint, including hair invented during restoration.
+            # Use previous so this cannot undo faces swapped earlier in this image.
+            result = self._protect_hairline(result, previous, face, on_log)
         return result, len(selected), len(faces)
 
     def _target_face_choice(self, target, target_path, face_selector):

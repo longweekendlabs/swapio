@@ -11,6 +11,89 @@ import setup_models
 
 
 class FaceProtectionTests(unittest.TestCase):
+    def test_hairline_protection_removes_invented_hair_without_replacing_brows_or_face(self):
+        original = np.full((512, 512, 3), 160, np.uint8)
+        original[:80] = 20
+        generated = np.full_like(original, 190)
+        generated[:110] = 35  # new hair drawn below the real hairline
+        generated[220:235, 140:220] = 50  # source eyebrow must remain
+        original_labels = np.ones((512, 512), np.uint8)
+        original_labels[:80] = 17
+        generated_labels = original_labels.copy()
+        generated_labels[:110] = 17
+        generated_labels[220:235, 140:220] = 2
+        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
+        engine = core.SwapEngine()
+        calls = []
+        def parse(image, _face, matrix=None):
+            calls.append(matrix)
+            return image, original_labels if image is original else generated_labels, identity
+        engine._parse_face = parse
+        face = SimpleNamespace(kps=np.ones((5, 2), np.float32))
+        fixed = engine._protect_hairline(generated, original, face)
+        np.testing.assert_array_equal(fixed[:110], original[:110])
+        np.testing.assert_array_equal(fixed[125:], generated[125:])
+        self.assertIsNone(calls[0])
+        self.assertIs(calls[1], identity)
+
+    def test_hairline_protection_warps_to_target_and_leaves_absent_hair_unchanged(self):
+        before = np.ones((512, 512), np.uint8)
+        after = before.copy()
+        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
+        self.assertIsNone(core.SwapEngine._hairline_protection(before, after, identity, (700, 700, 3)))
+        after[20:40, 20:40] = 17
+        matrix = np.array([[1, 0, -100], [0, 1, -200]], np.float32)
+        mask = core.SwapEngine._hairline_protection(before, after, matrix, (700, 700, 3))
+        self.assertEqual(mask.shape, (700, 700))
+        self.assertEqual(float(mask[230, 130]), 1)
+        self.assertEqual(float(mask[30, 30]), 0)
+
+    def test_hairline_protection_excludes_features_even_beside_classified_hair(self):
+        before = np.ones((512, 512), np.uint8)
+        after = before.copy()
+        after[20:100, 20:100] = 17
+        before[50:70, 80:120] = 4
+        before[30:40, 80:120] = 2
+        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
+        mask = core.SwapEngine._hairline_protection(before, after, identity, (512, 512, 3))
+        self.assertEqual(float(mask[55, 90]), 0)
+        self.assertEqual(float(mask[35, 90]), 0)
+        self.assertEqual(float(mask[55, 50]), 1)
+
+    def test_landmark_guard_preserves_features_when_parser_mistakes_lashes_for_hair(self):
+        original = np.full((512, 512, 3), 160, np.uint8)
+        generated = np.full_like(original, 90)
+        before = np.ones((512, 512), np.uint8)
+        after = before.copy()
+        after[:250] = 17  # incorrect parser boundary overlaps central features
+        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
+        engine = core.SwapEngine()
+        engine._parse_face = lambda image, _face, **_kw: (
+            image, before if image is original else after, identity)
+        points = np.resize(np.array([[150, 180], [350, 180], [350, 400], [150, 400]],
+                                    np.float32), (106, 2))
+        face = SimpleNamespace(kps=np.ones((5, 2), np.float32), landmark_2d_106=points)
+        fixed = engine._protect_hairline(generated, original, face)
+        np.testing.assert_array_equal(fixed[180:401, 150:351], generated[180:401, 150:351])
+        np.testing.assert_array_equal(fixed[60:100, 60:100], original[60:100, 60:100])
+
+    def test_hairline_protection_runs_after_model_choice_with_previous_face_results(self):
+        faces = [SimpleNamespace(bbox=np.array([0, 0, 80, 80])),
+                 SimpleNamespace(bbox=np.array([80, 0, 120, 40]))]
+        engine = core.SwapEngine()
+        engine.analyser = SimpleNamespace(get=lambda _: faces)
+        engine._visible_face_mask = lambda image, _: np.ones(image.shape[:2], np.float32)
+        engine._identity_checked_face = lambda image, *_args, **_kwargs: (image + 1, True)
+        received = []
+        def protect(rendered, previous, face, _log):
+            received.append((int(rendered[0, 0, 0]), int(previous[0, 0, 0]), face))
+            return rendered
+        engine._protect_hairline = protect
+        engine.swap_array(np.zeros((128, 128, 3), np.uint8), object(), all_faces=True,
+                          preserve_mouth=False)
+        self.assertEqual([(a, b) for a, b, _ in received], [(1, 0), (2, 1)])
+        self.assertIs(received[1][2], faces[1])
+
     def test_complete_mouth_mask_removes_generated_corner_outside_original_lips(self):
         points = np.zeros((106, 2), np.float32)
         points[52:72] = np.tile([[40, 45], [80, 45], [80, 60], [40, 60]], (5, 1))

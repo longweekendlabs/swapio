@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-10-31
+
+### Fixed
+
+- Preserve the destination hairline and restore bare forehead/temple skin where the swap or restoration model invents extra hair. Generated facial features remain protected from this correction.
+- Reprocess previous outputs after the hairline-compositing update.
+
 ## [0.5.7] - 2026-10-31
 
 ### Added
