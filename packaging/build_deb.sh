@@ -50,8 +50,8 @@ Depends: ffmpeg
 Priority: optional
 Installed-Size: ${installed_kb}
 Homepage: https://github.com/longweekendlabs/swapio
-Description: Private offline batch face swapping for still photos
- Swapio replaces one source face across a batch of destination photos.
+Description: Offline face swapping for photos, videos and GIFs
+ Swapio replaces one source face across destination photos, videos and GIFs.
  Processing runs locally, original files are never changed, and the
  separately licensed pretrained models are downloaded and verified on
  first use.

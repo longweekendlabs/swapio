@@ -110,13 +110,13 @@ Requires: /usr/bin/ffprobe
 Name:           swapio
 Version:        ${version}
 Release:        ${release}%{?dist}
-Summary:        Private offline batch face swapping for still photos
+Summary:        Offline face swapping for photos, videos and GIFs
 License:        MIT AND LGPL-3.0-only
 URL:            https://github.com/longweekendlabs/swapio
 BuildArch:      ${architecture}
 
 %description
-Swapio replaces one source face across a batch of destination photos. Processing
+Swapio replaces one source face across destination photos, videos and GIFs. Processing
 runs locally, original files are never changed, and public packages download and
 verify the separately licensed pretrained models on first use.
 

@@ -58,11 +58,11 @@ Select a video or GIF to adjust its own optional start and end directly below th
 
 Tracking checks the selected person's original face identity on every frame. Uncertain matches stay unchanged and are counted in the result. The face model and sampling choice stay fixed within each continuous scene to reduce flicker; blinking, speech, occlusion and cuts still need visual review.
 
-Videos export MP4 with the original audio content and displayed orientation. Variable-frame-rate inputs are converted to their average frame rate. Media runs sequentially, photo and animation model sets unload before switching between them and after the job, and cancelled or failed renders remove temporary movies. Only verified outputs count as saved.
+WebM works through Add media and folder import alongside MP4, MOV, MKV, AVI and M4V. Videos export MP4 with the original audio content and displayed orientation. Variable-frame-rate inputs are converted to their average frame rate. Media runs sequentially, photo and animation model sets unload before switching between them and after the job, and cancelled or failed renders remove temporary movies. Only verified outputs count as saved.
 
 GIF input stays GIF output, keeping the frame delays, loop count, dimensions and transparency. Zero or missing frame delays use 100 milliseconds. Each frame uses GIF's limited colour palette; colours may change during export. Frames are processed one at a time, without keeping the whole animation in memory. GIF processing uses the existing image libraries and needs no FFmpeg.
 
-Video requires the computer's FFmpeg and ffprobe, with H.264 encoding available. Swapio reports missing tools and does not download another media runtime. HDR inputs need an SDR copy for this first video version. This feature is available for local testing and has not been released in the downloadable packages yet.
+Video requires the computer's FFmpeg and ffprobe, with H.264 encoding available. Swapio reports missing tools and does not download another media runtime. HDR inputs need an SDR copy for this first video version. Video/GIF support and multiple-face photo selection are available for local testing; the public download has not been updated with these features yet.
 
 ## Download
 

@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-## [0.6.3] - 2026-10-31
+## [0.6.3] - 2026-11-01
+
+Local test package; a public release is pending approval.
 
 ### Fixed
 
@@ -15,6 +17,10 @@
 
 - Select multiple numbered faces in the photo picker with ordinary clicks, including reflections. Preview/export/history use the chosen subset, and unselected faces stay untouched. Videos/GIFs continue to follow one selected face, with that limitation explained in their notice and picker.
 - Source-portrait guidance explaining useful framing, lighting and expression without introducing an arbitrary minimum pixel size.
+
+### Changed
+
+- Package and desktop descriptions now cover photos, videos and GIFs. WebM input uses the same video workflow and exports MP4 with audio; it does not need a separate model or runtime.
 
 ## [0.6.2] - 2026-10-31
 

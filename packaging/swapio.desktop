@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Swapio
-Comment=Private offline batch face swapping
+Comment=Offline face swapping for photos, videos and GIFs
 Exec=swapio
 Icon=swapio
 Terminal=false
