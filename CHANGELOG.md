@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-07
+
+### Fixed
+
+- The app no longer crashes partway through a batch after you choose faces in the picker. The picker window was freed only after the batch had already resumed, and the batch's memory cleanup could run into it while it was half destroyed. The picker is now closed completely before processing continues.
+
 ## [0.6.4] - 2026-11-07
 
 Swaps look natural again. Several steps added since 0.4.5 were each making the result look more pasted on; this release removes or narrows them.

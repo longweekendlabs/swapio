@@ -147,6 +147,51 @@ class FaceSelectionTests(unittest.TestCase):
         self.assertFalse(write.call_args.args[0]['ask_face'])
         window.close()
 
+    @patch('app.write_state')
+    @patch('app.read_state', return_value={'ask_face': True, 'face_mode': 1})
+    @patch('app.core.missing_models', return_value=[])
+    def test_picker_is_destroyed_before_the_worker_resumes(self, _missing, _read, _write):
+        # Resuming the worker while the picker was still being freed let the
+        # worker's garbage collector crash the packaged app mid-batch.
+        import shiboken6
+        window = app.MainWindow()
+        seen = {}
+        for accept in (True, False):
+            worker = SimpleNamespace(mode='batch', _stop=False)
+            worker.stop = Mock()
+            def submit(choice, worker=worker, accept=accept):
+                dialog = seen['dialog']
+                seen[accept] = (choice, shiboken6.isValid(dialog), window._face_dialog)
+            worker.submit_face_choice = submit
+            window.worker = worker
+            def fake_exec(dialog, accept=accept):
+                seen['dialog'] = dialog
+                dialog.selected_index = 1
+                return app.QDialog.Accepted if accept else app.QDialog.Rejected
+            with patch.object(app.FaceSelectionDialog, 'exec', fake_exec):
+                window._face_choice_requested({
+                    'target': 'photo.png', 'image': np.zeros((60, 100, 3), np.uint8),
+                    'boxes': [[5, 5, 45, 45], [65, 10, 90, 35]], 'worker': worker,
+                })
+        self.assertEqual(seen[True], (1, False, None))
+        self.assertEqual(seen[False], (None, False, None))
+        window.worker = None
+        window.close()
+
+    def test_worker_wait_releases_on_choice_or_stop_without_polling(self):
+        engine = SimpleNamespace()
+        worker = app.TaskWorker(engine, 'batch', ask_face=True)
+        faces = [SimpleNamespace(bbox=np.array([0, 0, 10, 10]), kps=np.zeros((5, 2)))]
+        worker.face_choice_requested.connect(lambda _request: worker.submit_face_choice(0))
+        with patch('app.core.face_selection_key', return_value='k'):
+            self.assertEqual(worker._select_face(Path('a.png'), None, faces), 0)
+        worker.face_choices.clear()
+        worker.face_choice_requested.disconnect()
+        worker.face_choice_requested.connect(lambda _request: worker.stop())
+        with patch('app.core.face_selection_key', return_value='k'):
+            with self.assertRaises(core.ProcessingCancelled):
+                worker._select_face(Path('a.png'), None, faces)
+
     def test_dialog_requires_explicit_selection_and_accepts_smaller_face(self):
         dialog = app.FaceSelectionDialog('portrait.png', np.zeros((60, 100, 3), np.uint8),
                                          [[5, 5, 45, 45], [65, 10, 90, 35]])

@@ -26,6 +26,7 @@ try:
 except ImportError:
     pass
 
+import shiboken6
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, QSize, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QImage, QPixmap, QColor
 from PySide6.QtWidgets import (
@@ -477,9 +478,9 @@ class TaskWorker(QThread):
             "boxes": [np.asarray(face.bbox).tolist() for face in faces],
             "worker": self,
         })
-        while not self._choice_event.wait(.1):
-            if self._stop:
-                raise core.ProcessingCancelled()
+        # Block in C without running Python bytecode. The UI destroys the
+        # picker before releasing this wait; stop() also sets the event.
+        self._choice_event.wait()
         if self._stop:
             raise core.ProcessingCancelled()
         if self._choice is not None:
@@ -1419,10 +1420,17 @@ class MainWindow(QMainWindow):
             self._face_dialog = dialog
             self.status_label.setText("Waiting for face selection…")
             result = dialog.exec()
+            choice = dialog.selected_index if result == QDialog.Accepted else None
+            # Destroy the picker completely while the worker is still parked.
+            # Freeing it after resuming the worker let its garbage collector
+            # walk half-destroyed Qt wrappers and crashed the app mid-batch.
+            self._face_dialog = None
+            shiboken6.delete(dialog)
+            del dialog
             if result == FaceSelectionDialog.STOP_BATCH:
                 worker.stop()
             else:
-                worker.submit_face_choice(dialog.selected_index if result == QDialog.Accepted else None)
+                worker.submit_face_choice(choice)
             self.status_label.setText("Generating preview…" if worker.mode in {"preview","video_preview"} else "Swapping media…")
         except Exception as exc:
             worker.stop()
