@@ -11,7 +11,7 @@ its owner's terms:
 
 - **InsightFace buffalo_l** (detection, landmarks, identity) and **InSwapper**:
   the published pretrained models are stated to be for non-commercial research use.
-- **HyperSwap 1B 256**: published under ResearchRAIL.
+- **HyperSwap 1A 256**: published under ResearchRAIL.
 - **GPEN-BFR 1024** (face restoration): research and non-commercial terms.
 - **BiSeNet ResNet18** (mouth expression parsing): downloaded separately from
   [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing), under its MIT licence.

@@ -28,7 +28,7 @@ class IdentitySelectionTests(unittest.TestCase):
     def test_clear_identity_gain_selects_alternate_and_limits_restoration(self):
         for limit in (0.2, 0.8):
             engine = self.engine()
-            engine._source_similarity = Mock(side_effect=[0.8, 0.91, 0.90])
+            engine._source_similarity = Mock(side_effect=[0.5, 0.91, 0.90])
             result, selected = self.choose(engine, strength=limit)
             self.assertTrue(selected)
             self.assertIs(result, self.restored)
@@ -36,9 +36,20 @@ class IdentitySelectionTests(unittest.TestCase):
             self.assertIs(engine._restore_face.call_args.args[4], self.target)
             self.assertEqual(engine._inswapper_face.call_args.args[3], 256)
 
+    def test_good_detail_likeness_never_tries_the_coarse_model(self):
+        # The coarse model is scored by its own recognition network and always
+        # "wins"; a working detail-model result must be kept without comparison.
+        engine = self.engine()
+        engine._source_similarity = Mock(side_effect=[core.IDENTITY_FALLBACK_BELOW])
+        result, selected = self.choose(engine)
+        self.assertFalse(selected)
+        self.assertIs(result, self.primary)
+        engine._inswapper_face.assert_not_called()
+        engine._restore_face.assert_not_called()
+
     def test_close_scores_keep_existing_detailed_rendering(self):
         engine = self.engine()
-        engine._source_similarity = Mock(side_effect=[0.80, 0.82])
+        engine._source_similarity = Mock(side_effect=[0.50, 0.52])
         result, selected = self.choose(engine)
         self.assertFalse(selected)
         self.assertIs(result, self.primary)
@@ -56,7 +67,7 @@ class IdentitySelectionTests(unittest.TestCase):
 
     def test_restoration_that_repaints_identity_is_rejected(self):
         engine = self.engine()
-        engine._source_similarity = Mock(side_effect=[0.80, 0.91, 0.81])
+        engine._source_similarity = Mock(side_effect=[0.50, 0.91, 0.51])
         result, selected = self.choose(engine)
         self.assertTrue(selected)
         self.assertIs(result, self.alternate)
@@ -64,7 +75,7 @@ class IdentitySelectionTests(unittest.TestCase):
     def test_zero_strength_and_best_do_not_restore_inside_selection(self):
         for quality, strength in (("careful", 0), ("best", 0.8)):
             engine = self.engine()
-            engine._source_similarity = Mock(side_effect=[0.80, 0.91])
+            engine._source_similarity = Mock(side_effect=[0.50, 0.91])
             result, selected = self.choose(engine, quality, strength, size=1024)
             self.assertTrue(selected)
             self.assertIs(result, self.alternate)
@@ -72,7 +83,7 @@ class IdentitySelectionTests(unittest.TestCase):
             self.assertEqual(engine._inswapper_face.call_args.args[3], 512)
 
     def test_unmeasurable_candidates_and_draft_mode_keep_primary(self):
-        for scores in ([None], [0.8, None]):
+        for scores in ([None], [0.5, None]):
             engine = self.engine()
             engine._source_similarity = Mock(side_effect=scores)
             result, selected = self.choose(engine)
@@ -108,7 +119,7 @@ class IdentitySelectionTests(unittest.TestCase):
         visibility = np.ones(self.target.shape[:2], np.float32)
         visibility[10:20, 12:18] = 0
         engine._visible_face_mask = lambda *_: visibility
-        engine._source_similarity = lambda image, *_: {30: 0.80, 60: 0.91, 90: 0.90}[int(image[0, 0, 0])]
+        engine._source_similarity = lambda image, *_: {30: 0.50, 60: 0.91, 90: 0.90}[int(image[0, 0, 0])]
         result, count, _ = engine.swap_array(self.target, object(), preserve_mouth=False)
         self.assertEqual(count, 1)
         np.testing.assert_array_equal(result[visibility == 0], self.target[visibility == 0])
@@ -116,7 +127,7 @@ class IdentitySelectionTests(unittest.TestCase):
 
     def test_gain_erased_by_final_blend_keeps_finished_primary(self):
         engine = self.engine()
-        engine._source_similarity = Mock(side_effect=[0.80, 0.91, 0.80, 0.82])
+        engine._source_similarity = Mock(side_effect=[0.50, 0.91, 0.50, 0.52])
         result, selected = engine._identity_checked_face(
             self.target, self.face, object(), 512, "careful", 0, lambda _: None,
             finish=lambda image, _identity: image + 1,

@@ -32,9 +32,9 @@ SWAPPER_URL = "https://huggingface.co/mikestealth/inswapper/resolve/main/inswapp
 SWAPPER_SHA256 = "0fa95f167682b4f61edf24f8d66c46b4ab130e8be058f00c8150e6d0170ca72f"
 HYPERSWAP_URL = (
     "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/"
-    "hyperswap_1b_256.onnx"
+    "hyperswap_1a_256.onnx"
 )
-HYPERSWAP_SHA256 = "5124031789c42f71b9558fb71954ef7aedb6da7ed9fac79293e23c61a792a73e"
+HYPERSWAP_SHA256 = "c0e98a8a03a238f461ed3d2570e426b49f46745ee400854a60dceeb70c246add"
 ENHANCER_URL = (
     "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/"
     "gpen_bfr_1024.onnx"
@@ -214,7 +214,7 @@ def install_hyperswap(
     should_stop: StopFn = lambda: False,
 ) -> None:
     component = "High-quality face swapper"
-    destination = model_root / "hyperswap_1b_256.onnx"
+    destination = model_root / "hyperswap_1a_256.onnx"
     if destination.is_file() and sha256(destination) == HYPERSWAP_SHA256:
         print("High-quality face swapper is already installed and verified.")
         on_progress(component, "Installed and verified", 1, 1)

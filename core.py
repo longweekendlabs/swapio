@@ -23,12 +23,14 @@ os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 REQUIRED_BUFFALO_MODELS = {"2d106det.onnx", "det_10g.onnx", "w600k_r50.onnx"}
 SWAPPER_MODEL = "inswapper_128.onnx"
-HYPERSWAP_MODEL = "hyperswap_1b_256.onnx"
+# 1b (0.5.0-0.6.3) produced paler, hazier eyes and a flatter skin tone than 1a;
+# measured against 0.4.5 output, 1a is the closer, more natural model.
+HYPERSWAP_MODEL = "hyperswap_1a_256.onnx"
 ENHANCER_MODEL = "gpen_bfr_1024.onnx"
 OCCLUDER_MODEL = "xseg_1.onnx"
 FACE_PARSER_MODEL = "bisenet_resnet_18.onnx"
 HISTORY_FILENAME = ".swapio-history.json"
-PROCESSING_REVISION = 24
+PROCESSING_REVISION = 26
 # Require a clear gain before trading the detail model for the identity model.
 # Close scores keep the existing rendering rather than oscillating between models.
 MIN_IDENTITY_GAIN = 0.035
@@ -36,6 +38,11 @@ IDENTITY_RESTORATION_LIMIT = 0.35
 # The alternate model is natively 128px. Beyond a 3x face span its identity
 # gain does not justify sacrificing the existing close-up eye detail.
 MAX_IDENTITY_FACE_SPAN = 128 * 3
+# The 128px identity model shares the recognition network used for scoring, so
+# it always "wins" the likeness comparison (measured 0.90-0.92 against 0.73-0.83
+# for the detail model on the same photos) while looking airbrushed after
+# restoration. Only fall back to it when the detail model clearly failed.
+IDENTITY_FALLBACK_BELOW = 0.6
 HYPERSWAP_CUDA_OPTIONS = {
     "cudnn_conv_algo_search": "DEFAULT",
     "arena_extend_strategy": "kSameAsRequested",
@@ -574,42 +581,6 @@ class SwapEngine:
         protection *= np.clip(away / 5, 0, 1)
         return cv2.warpAffine(protection, cv2.invertAffineTransform(matrix), shape[1::-1])
 
-    @staticmethod
-    def _forehead_protection(original_labels, generated_labels, matrix, face, shape):
-        """Keep a continuous forehead above the brows, rather than isolated hair patches."""
-        points = np.asarray(getattr(face, "landmark_2d_106", None), np.float32)
-        kps = np.asarray(getattr(face, "kps", None), np.float32)
-        if (points.shape != (106, 2) or kps.shape != (5, 2)
-                or not np.isfinite(points).all() or not np.isfinite(kps).all()):
-            return None
-        aligned = cv2.transform(points[None], matrix)[0]
-        eyes = cv2.transform(kps[None], matrix)[0][:2]
-        span = float(np.linalg.norm(eyes[0] - eyes[1]))
-        anchors = sorted((float(np.median(brow[:, 0])), float(brow[:, 1].min()))
-                         for brow in (aligned[43:52], aligned[97:106]))
-        if span < 4 or anchors[1][0] - anchors[0][0] < span * 0.25:
-            return None
-        yy, xx = np.indices(original_labels.shape, dtype=np.float32)
-        brow_line = np.interp(xx, [point[0] for point in anchors],
-                              [point[1] for point in anchors])
-        # Keep the whole forehead opaque down to brow level, including skin
-        # mislabelled as hair. Fading higher leaves dark model texture mixed
-        # into bare skin. The fade continues at the temples; the feature guards
-        # below exclude actual eyebrows and eyes from the correction.
-        protection = np.clip((brow_line + span * 0.30 - yy) / (span * 0.25), 0, 1)
-        protection = protection * protection * (3 - 2 * protection)
-        head = np.isin(original_labels, tuple(range(1, 14)) + (17, 18)).astype(np.uint8)
-        head = cv2.dilate(head, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
-        protection *= head
-        # Generated brows can sit higher than the destination's measured brows.
-        # Preserve both sets of features, including their antialiased edges.
-        features = (np.isin(original_labels, (2, 3, 4, 5, 6, 10, 11, 12, 13))
-                    | np.isin(generated_labels, (2, 3, 4, 5, 6, 10, 11, 12, 13)))
-        away = cv2.distanceTransform(1 - features.astype(np.uint8), cv2.DIST_L2, 5)
-        protection *= np.clip(away / 5, 0, 1)
-        return cv2.warpAffine(protection.astype(np.float32),
-                              cv2.invertAffineTransform(matrix), shape[1::-1])
-
     def _protect_hairline(self, rendered, original, face, on_log=_noop):
         kps = np.asarray(getattr(face, "kps", None), np.float32)
         if kps.shape != (5, 2) or not np.isfinite(kps).all():
@@ -620,10 +591,9 @@ class SwapEngine:
         after = self._parse_face(rendered, face, matrix=before[2])
         if after is None:
             return rendered
+        # Only hair is restored. Pasting the target's whole forehead down to
+        # the brows left a lighter band and a line above the eyebrows.
         protection = self._hairline_protection(before[1], after[1], before[2], original.shape)
-        forehead = self._forehead_protection(before[1], after[1], before[2], face, original.shape)
-        if forehead is not None:
-            protection = forehead if protection is None else np.maximum(protection, forehead)
         points = np.asarray(getattr(face, "landmark_2d_106", None), np.float32)
         if protection is not None and points.shape == (106, 2) and np.isfinite(points).all():
             # Also protect the measured central features when the parser misses
@@ -637,22 +607,26 @@ class SwapEngine:
                 protection *= np.clip((away - margin) / max(margin, 1), 0, 1)
         if protection is None or not np.any((protection > 0) & np.any(rendered != original, axis=2)):
             return rendered
-        on_log("Protected the original hairline and forehead from generated hair.")
+        on_log("Protected the original hairline from generated hair.")
         return self._apply_visibility(rendered, original, 1 - protection)
 
     def _mouth_expression_mask(self, original, face, visibility):
-        """Protect an open/obstructed expression in original target coordinates."""
+        """Protect an open/obstructed expression in original target coordinates.
+
+        Returns (mask, obstructed) or (None, False). Only an obstructed mouth
+        keeps the target's lips; an open, clear mouth keeps teeth/tongue only.
+        """
         points = getattr(face, "landmark_2d_106", None)
         kps = getattr(face, "kps", None)
         if points is None or kps is None:
-            return None
+            return None, False
         points, kps = np.asarray(points, np.float32), np.asarray(kps, np.float32)
         if (points.shape != (106, 2) or kps.shape != (5, 2)
                 or not np.isfinite(points).all() or not np.isfinite(kps).all()):
-            return None
+            return None, False
         parsed = self._parse_face(original, face)
         if parsed is None:
-            return None
+            return None, False
         _crop, labels, matrix = parsed
         landmarks = cv2.transform(points[None], matrix)[0]
         return self._expression_mask_from_labels(labels, landmarks, visibility, matrix)
@@ -695,7 +669,14 @@ class SwapEngine:
         seed = cv2.dilate(seed, cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
         ))
-        binary = np.isin(labels, (11, 12, 13)).astype(np.uint8)
+        aligned_visibility = cv2.warpAffine(visibility, matrix, labels.shape[::-1])
+        visible = float(aligned_visibility[seed > 0].mean()) if np.any(seed) else 1.0
+        obstructed = visible < 0.85
+        # A clear open mouth keeps the generated lips: pasting the target's
+        # lips and surrounding skin back left a visible tone ring. Only an
+        # obstruction at the lips needs the complete original mouth.
+        classes = (11, 12, 13) if obstructed else (11,)
+        binary = np.isin(labels, classes).astype(np.uint8)
         count, components = cv2.connectedComponents(binary)
         selected = np.zeros_like(binary)
         for component in range(1, count):
@@ -704,22 +685,19 @@ class SwapEngine:
                 selected[region] = 1
         area = int(selected.sum())
         if area < 12 or area > labels.size * 0.2:
-            return None
-        # Closed, unobstructed lips retain generated identity. Open mouths and
-        # foreground objects at the lips need complete expression protection.
+            return None, False
         inner_area = int(np.count_nonzero((labels == 11) & (selected > 0)))
-        aligned_visibility = cv2.warpAffine(visibility, matrix, labels.shape[::-1])
-        visible = float(aligned_visibility[seed > 0].mean()) if np.any(seed) else 1.0
-        if inner_area < max(12, width * width * 0.012) and visible >= 0.85:
-            return None
+        if inner_area < max(12, width * width * 0.012) and not obstructed:
+            return None, False
         full = cv2.warpAffine(selected, cv2.invertAffineTransform(matrix),
                               visibility.shape[::-1], flags=cv2.INTER_NEAREST)
-        # Keep the complete original contour with a narrow outward feather.
-        # This region never moves with the generated mouth landmarks.
+        # Keep the original contour, feathered outward. This region never
+        # moves with the generated mouth landmarks.
         distance = cv2.distanceTransform(1 - full, cv2.DIST_L2, 5)
         scale = max(float(np.linalg.norm(matrix[:, 0])), 0.001)
-        feather = max(width / scale * 0.02, 1.0)
-        return np.clip(1.0 - distance / feather, 0, 1)
+        feather = max(width / scale * (0.05 if obstructed else 0.03), 1.0)
+        soft = np.clip(1.0 - distance / feather, 0, 1)
+        return soft * soft * (3 - 2 * soft), obstructed
 
     @staticmethod
     def _complete_mouth_protection(protection, original_face, generated_face):
@@ -754,7 +732,7 @@ class SwapEngine:
             cv2.MORPH_ELLIPSE, (2 * inset + 1, 2 * inset + 1)
         ))
         distance = cv2.distanceTransform(1 - binary, cv2.DIST_L2, 5)
-        feather = max(width * 0.04, 1.0)
+        feather = max(width * 0.08, 1.0)
         soft = np.clip(1 - distance / feather, 0, 1)
         return np.maximum(protection, soft * soft * (3 - 2 * soft))
 
@@ -1144,6 +1122,9 @@ class SwapEngine:
         if primary_score is None:
             on_log("Source-face comparison unavailable; kept the detail model result.")
             return finalize(primary, False), False
+        if primary_score >= IDENTITY_FALLBACK_BELOW:
+            on_log(f"Source likeness {primary_score:.2f}; kept the natural detail model result.")
+            return finalize(primary, False), False
         # More sampling phases cannot repair weak identity conditioning. Compare
         # the independent identity model instead; both use the same target pose.
         alternate_size = 256 if boost_size <= 512 else 512
@@ -1462,7 +1443,9 @@ class SwapEngine:
         for face in selected:
             previous = result.copy()
             visibility = self._visible_face_mask(target, face)
-            mouth_protection = self._mouth_expression_mask(target, face, visibility) if preserve_mouth else None
+            mouth_protection, mouth_obstructed = (
+                self._mouth_expression_mask(target, face, visibility) if preserve_mouth else (None, False)
+            )
 
             def finish(rendered, identity_selected):
                 if quality == "best":
@@ -1477,11 +1460,14 @@ class SwapEngine:
                         rendered = self._destination_eyes(rendered, target, face, placed_face)
                     if preserve_mouth and mouth_protection is None:
                         rendered = self._preserve_inner_mouth(rendered, target, face, placed_face)
-                if mouth_protection is not None:
+                if mouth_protection is not None and mouth_obstructed:
                     placed_face = self._landmarks_after_swap(rendered, face)
                     protection = self._complete_mouth_protection(mouth_protection, face, placed_face)
                     rendered = self._apply_visibility(rendered, target, 1.0 - protection)
-                    on_log("Protected the target's open/obstructed mouth expression, including lips and tongue.")
+                    on_log("Protected the target's obstructed mouth, including lips and tongue.")
+                elif mouth_protection is not None:
+                    rendered = self._apply_visibility(rendered, target, 1.0 - mouth_protection)
+                    on_log("Kept the target's teeth and tongue inside the swapped lips.")
                 # Foreground goes last, preserving prior swapped faces too.
                 return self._apply_visibility(rendered, previous, visibility)
 

@@ -13,7 +13,7 @@ if os.environ.get("SWAPIO_BUNDLE_MODELS") == "1":
         project_root / "models/buffalo_l/det_10g.onnx",
         project_root / "models/buffalo_l/w600k_r50.onnx",
         project_root / "models/inswapper_128.onnx",
-        project_root / "models/hyperswap_1b_256.onnx",
+        project_root / "models/hyperswap_1a_256.onnx",
         project_root / "models/gpen_bfr_1024.onnx",
         project_root / "models/xseg_1.onnx",
         project_root / "models/bisenet_resnet_18.onnx",

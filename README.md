@@ -32,9 +32,9 @@ If the source photo contains several people, Swapio uses the largest detected fa
 
 ## Four quality modes, and they mean something
 
-Careful is the default. For smaller faces, it compares two replacements against your source portrait and chooses the closer match when the difference is clear. When their likeness is similar, it keeps the more detailed rendering. Larger faces keep the detail model to protect close-up eye detail. Sampling adjusts to the face size.
+Careful is the default. It keeps the detail model for every face and only falls back to a second face model when the first clearly fails to resemble your source portrait. Sampling adjusts to the face size.
 
-Stronger replacements receive limited detail restoration, checked again against the source to avoid repainting the identity. The detailed rendering retains local eye recovery with stable eyelid geometry; tilted heads are checked in an upright crop. The restoration slider limits both kinds of recovery, and setting it to zero disables them.
+A fallback replacement receives limited detail restoration, checked again against the source to avoid repainting the identity. The detailed rendering retains local eye recovery with stable eyelid geometry; tilted heads are checked in an upright crop. The restoration slider limits both kinds of recovery, and setting it to zero disables them.
 
 Best adds whole-face restoration, which can also change eyes and lips. Balanced uses fewer samples, and Fast is available for drafts. These modes cannot guarantee an exact likeness or recover every detail in a close-up.
 
@@ -46,7 +46,7 @@ After each preview or batch, Swapio unloads its processing models to free memory
 
 Swapio replaces facial features within the destination photo. The body, hair, background and image dimensions stay. The models aim to retain pose and expression, but can change eyebrows, eyelids and lips. Lossless PNG output keeps every pixel outside the face composite exactly as it was decoded.
 
-Mouth protection keeps the target's open or obstructed expression together, including lips, teeth and tongue. Closed, unobstructed lips stay generated. Foreground protection helps retain objects and hair crossing the face.
+Mouth protection keeps the target's teeth and tongue inside the swapped lips when the mouth is open. When a hand, object or tongue covers the mouth, it keeps the target's whole mouth, lips included, with a soft edge. Closed lips stay generated. Foreground protection helps retain objects and hair crossing the face, and the original hairline survives without pasting the target's forehead back over the swap.
 
 Target-eye preservation is off by default. Enabling it keeps the target's eye interiors, eyelids, lashes and eye colour in the swapped face. Leaving it off uses generated eyes, whose colour is not guaranteed to match the source exactly. Oriented pixels and safe EXIF and ICC metadata are retained where possible. Original files are never modified.
 

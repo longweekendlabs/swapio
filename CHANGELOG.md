@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-07
+
+Swaps look natural again. Several steps added since 0.4.5 were each making the result look more pasted on; this release removes or narrows them.
+
+### Fixed
+
+- Eyes are crisper and keep their shape and gaze again, and skin tone is less flat. The detail face model returns to the earlier 1A version. The 1B version used since 0.5.0 drew paler, hazier, droopier eyes. Existing installs already have the 1A model; new installs download it during setup.
+- No more line or lighter band above the eyebrows. Swapio used to paste the destination's own forehead back down to the brows, so its different skin tone ended in a visible edge. Only the original hairline is restored now.
+- Smaller faces no longer come out airbrushed and orange. Careful compared the detail model with the older 128px model using the same recognition network that the older model is built on, so the older model always won the comparison and was then smoothed by restoration. Careful now keeps the detail model unless its likeness clearly fails.
+- No more ring around open mouths. An open, clear mouth keeps the swapped lips and only the destination's teeth and tongue. The destination's whole mouth is still kept when something covers it, now with a softer edge.
+- Photos you processed before are swapped again on the next run, instead of being skipped as already done.
+
 ## [0.6.3] - 2026-11-01
 
 Local test package; a public release is pending approval.

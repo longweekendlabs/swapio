@@ -11,48 +11,6 @@ import setup_models
 
 
 class FaceProtectionTests(unittest.TestCase):
-    def test_forehead_mask_covers_bare_skin_between_hair_patches_and_spares_high_generated_brows(self):
-        points = np.zeros((106, 2), np.float32)
-        points[43:52] = np.column_stack((np.linspace(160, 220, 9), np.full(9, 200)))
-        points[97:106] = np.column_stack((np.linspace(290, 350, 9), np.full(9, 200)))
-        face = SimpleNamespace(landmark_2d_106=points,
-                               kps=np.array([[190, 240], [320, 240], [255, 290],
-                                             [220, 340], [290, 340]], np.float32))
-        before = np.ones((512, 512), np.uint8)
-        before[:60] = 17
-        after = before.copy()
-        after[65:95, 160:220] = 17
-        after[155:165, 165:215] = 2  # generated eyebrow above target brow
-        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
-        mask = core.SwapEngine._forehead_protection(before, after, identity, face, (512, 512, 3))
-        np.testing.assert_array_equal(mask[60:110, 140:360], 1)
-        np.testing.assert_array_equal(mask[175:190, 240:280], 1)
-        self.assertEqual(float(mask[160, 190]), 0)
-        np.testing.assert_array_equal(mask[250:], 0)
-        # A skin label between invented hair islands must receive the same
-        # protection; otherwise restoring islands leaves a false curved seam.
-        self.assertEqual(float(mask[80, 240]), float(mask[80, 190]))
-
-    def test_forehead_mask_requires_valid_landmarks_and_follows_alignment(self):
-        labels = np.ones((512, 512), np.uint8)
-        identity = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
-        self.assertIsNone(core.SwapEngine._forehead_protection(
-            labels, labels, identity, SimpleNamespace(), (600, 600, 3)))
-        points = np.zeros((106, 2), np.float32)
-        points[43:52] = [190, 200]
-        points[97:106] = [320, 200]
-        face = SimpleNamespace(landmark_2d_106=points,
-                               kps=np.array([[190, 240], [320, 240], [255, 290],
-                                             [220, 340], [290, 340]], np.float32))
-        base = core.SwapEngine._forehead_protection(labels, labels, identity, face, (600, 600, 3))
-        # Translate input coordinates with the face while keeping its aligned
-        # crop fixed; protection must translate back to the image as well.
-        face.landmark_2d_106 += [60, 70]
-        face.kps += [60, 70]
-        matrix = np.array([[1, 0, -60], [0, 1, -70]], np.float32)
-        moved = core.SwapEngine._forehead_protection(labels, labels, matrix, face, (600, 600, 3))
-        np.testing.assert_array_equal(moved[70:582, 60:572], base[:512, :512])
-
     def test_hairline_protection_removes_invented_hair_without_replacing_brows_or_face(self):
         original = np.full((512, 512, 3), 160, np.uint8)
         original[:80] = 20
@@ -275,20 +233,25 @@ class FaceProtectionTests(unittest.TestCase):
         result, _, _ = engine.swap_array(image * 0, face, quality='careful')
         np.testing.assert_array_equal(result, image)
 
-    def test_open_mouth_protection_includes_lips_and_extended_tongue_only(self):
+    def _open_mouth_labels(self):
         labels = np.zeros((128, 128), np.uint8)
-        labels[20:25, 20:60] = 12
+        labels[15:25, 20:60] = 12
         labels[25:40, 20:60] = 11
         labels[40:65, 33:48] = 11
         labels[90:100, 100:110] = 11  # unrelated mouth/segmentation component
         landmarks = np.zeros((106, 2), np.float32)
         landmarks[52:72] = np.tile([[20, 20], [60, 20], [60, 40], [20, 40]], (5, 1))
+        return labels, landmarks, np.array([[1, 0, 0], [0, 1, 0]], np.float32)
+
+    def test_clear_open_mouth_keeps_generated_lips_and_target_teeth_tongue(self):
+        labels, landmarks, matrix = self._open_mouth_labels()
         visibility = np.ones(labels.shape, np.float32)
-        matrix = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
-        mask = core.SwapEngine._expression_mask_from_labels(labels, landmarks, visibility, matrix)
-        self.assertIsNotNone(mask)
-        self.assertEqual(float(mask[23, 40]), 1)
-        self.assertEqual(float(mask[60, 40]), 1)
+        mask, obstructed = core.SwapEngine._expression_mask_from_labels(
+            labels, landmarks, visibility, matrix)
+        self.assertFalse(obstructed)
+        self.assertEqual(float(mask[30, 40]), 1)   # teeth/mouth interior
+        self.assertEqual(float(mask[60, 40]), 1)   # extended tongue
+        self.assertEqual(float(mask[17, 40]), 0)   # generated lip stays
         self.assertEqual(float(mask[95, 105]), 0)
         original = np.full((128, 128, 3), 80, np.uint8)
         swapped = np.full_like(original, 150)
@@ -296,20 +259,34 @@ class FaceProtectionTests(unittest.TestCase):
         np.testing.assert_array_equal(result[mask == 1], original[mask == 1])
         np.testing.assert_array_equal(result[mask == 0], swapped[mask == 0])
 
+    def test_obstructed_mouth_protects_lips_with_a_soft_edge(self):
+        labels, landmarks, matrix = self._open_mouth_labels()
+        visibility = np.full(labels.shape, 0.4, np.float32)
+        mask, obstructed = core.SwapEngine._expression_mask_from_labels(
+            labels, landmarks, visibility, matrix)
+        self.assertTrue(obstructed)
+        self.assertEqual(float(mask[17, 40]), 1)
+        self.assertEqual(float(mask[60, 40]), 1)
+        self.assertEqual(float(mask[95, 105]), 0)
+        # Feathered outward instead of a one-pixel cut.
+        self.assertTrue(0 < float(mask[14, 40]) < 1)
+
     def test_closed_unobstructed_lips_keep_generated_identity(self):
         labels = np.zeros((128, 128), np.uint8)
         labels[25:28, 20:60] = 12
         landmarks = np.zeros((106, 2), np.float32)
         landmarks[52:72] = np.tile([[20, 20], [60, 20], [60, 40], [20, 40]], (5, 1))
         matrix = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
-        mask = core.SwapEngine._expression_mask_from_labels(
+        mask, obstructed = core.SwapEngine._expression_mask_from_labels(
             labels, landmarks, np.ones(labels.shape, np.float32), matrix
         )
         self.assertIsNone(mask)
-        obscured = core.SwapEngine._expression_mask_from_labels(
+        self.assertFalse(obstructed)
+        obscured, obstructed = core.SwapEngine._expression_mask_from_labels(
             labels, landmarks, np.full(labels.shape, 0.4, np.float32), matrix
         )
         self.assertIsNotNone(obscured)
+        self.assertTrue(obstructed)
 
     def test_mouth_parser_rejects_invalid_output_before_compositing(self):
         engine = core.SwapEngine()
