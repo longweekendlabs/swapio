@@ -4,6 +4,8 @@
 
 ## [0.6.5] - 2026-11-07
 
+The first public release since 0.5.0. It brings everything from 0.5.1 to 0.6.4: short videos and GIFs in the same queue as photos, choosing several faces in one photo, more natural swaps with crisper eyes, and no line above the eyebrows or around the mouth. Every change is listed by version in [CHANGELOG.md](https://github.com/longweekendlabs/swapio/blob/main/CHANGELOG.md).
+
 ### Fixed
 
 - The app no longer crashes partway through a batch after you choose faces in the picker. The picker window was freed only after the batch had already resumed, and the batch's memory cleanup could run into it while it was half destroyed. The picker is now closed completely before processing continues.
